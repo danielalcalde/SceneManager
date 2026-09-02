@@ -1,5 +1,7 @@
 # Scene Manager for Home Assistant
 
+![Scene Manager Dashboard](images/screenshot.png)
+
 Scene Manager is a custom Home Assistant integration that gives you powerful, UI-driven tools to manage your scenes dynamically based on time of day, sun events, and smart button interactions.
 
 ## Features
@@ -18,7 +20,7 @@ Scene Manager is a custom Home Assistant integration that gives you powerful, UI
 ### Via HACS (Recommended)
 1. Open HACS in Home Assistant.
 2. Click the three dots in the top right corner and select **Custom repositories**.
-3. Add the URL to this GitHub repository and select **Integration** as the category.
+3. Add `https://github.com/danielalcalde/SceneManager` and select **Integration** as the category.
 4. Click **Add**, then search for "Scene Manager" in HACS and click **Download**.
 5. Restart Home Assistant.
 6. The Scene Manager UI will automatically appear in your sidebar.
