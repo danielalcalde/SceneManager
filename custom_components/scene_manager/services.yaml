@@ -1,0 +1,31 @@
+cycle_scene:
+  name: Cycle Scene
+  description: Cycles through all available scenes for a specific area.
+  fields:
+    area_id:
+      name: Area
+      description: The Area to cycle scenes in.
+      required: true
+      selector:
+        area:
+    direction:
+      name: Direction
+      description: Direction to cycle (forward or backward).
+      required: false
+      default: forward
+      selector:
+        select:
+          options:
+            - forward
+            - backward
+
+turn_on_adaptive:
+  name: Turn On Adaptive Scene
+  description: Turns on the lights in an area based on the configured time-of-day or sun schedule.
+  fields:
+    area_id:
+      name: Area
+      description: The Area to turn on.
+      required: true
+      selector:
+        area:
