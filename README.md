@@ -1,6 +1,6 @@
 # Scene Manager for Home Assistant
 
-![Scene Manager Dashboard](images/screenshot.png)
+
 
 Scene Manager is a custom Home Assistant integration that gives you powerful, UI-driven tools to manage your scenes dynamically based on time of day, sun events, and smart button interactions.
 
@@ -14,7 +14,8 @@ Scene Manager is a custom Home Assistant integration that gives you powerful, UI
   - When a Virtual Light is turned on, it automatically calculates the current time and activates the appropriate scene from your schedule!
   - Automatically proxies voice commands to your adaptive scenes.
   - **Scene Interpolation:** Map scenes to specific brightness percentages (e.g., 20% = Night Scene, 100% = Day Scene). When you adjust the slider to 60%, the backend mathematically blends the RGB colors and brightness of your native Home Assistant scenes!
-
+    
+![Scene Manager Dashboard](images/screenshot.png)
 ## Installation
 
 ### Via HACS (Recommended)
