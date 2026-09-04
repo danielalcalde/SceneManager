@@ -20,14 +20,40 @@ async def async_setup_platform(
     store = hass.data[DOMAIN]["store"]
     area_reg = ar.async_get(hass)
     
+    from homeassistant.helpers import entity_registry as er
+    entity_reg = er.async_get(hass)
+    
+    area_ids = set(store.data.get("areas", {}).keys())
+    for entity in entity_reg.entities.values():
+        if entity.domain == "scene" and entity.area_id:
+            area_ids.add(entity.area_id)
+    
     entities = []
-    # Create a virtual switch for every configured area
-    for area_id in store.data.get("areas", {}):
+    # Create a virtual switch for every area that has scenes or is configured
+    for area_id in area_ids:
         area = area_reg.async_get_area(area_id)
         area_name = area.name if area else area_id
         entities.append(AdaptiveSceneSwitch(hass, area_id, area_name))
         
     async_add_entities(entities)
+    
+    known_areas = set(area_ids)
+
+    from homeassistant.core import Event, callback
+
+    @callback
+    def _async_entity_registry_updated(event: Event) -> None:
+        if event.data.get("action") == "create":
+            entity_id = event.data.get("entity_id")
+            if entity_id and entity_id.startswith("scene."):
+                entity = entity_reg.async_get(entity_id)
+                if entity and entity.area_id and entity.area_id not in known_areas:
+                    known_areas.add(entity.area_id)
+                    area = area_reg.async_get_area(entity.area_id)
+                    area_name = area.name if area else entity.area_id
+                    async_add_entities([AdaptiveSceneSwitch(hass, entity.area_id, area_name)])
+                    
+    hass.bus.async_listen("entity_registry_updated", _async_entity_registry_updated)
 
 class AdaptiveSceneSwitch(SwitchEntity):
     """Virtual switch to trigger adaptive scenes for an area."""

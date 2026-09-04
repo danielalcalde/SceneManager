@@ -50,13 +50,39 @@ async def async_setup_platform(
     store = hass.data[DOMAIN]["store"]
     area_reg = ar.async_get(hass)
     
+    from homeassistant.helpers import entity_registry as er
+    entity_reg = er.async_get(hass)
+    
+    area_ids = set(store.data.get("areas", {}).keys())
+    for entity in entity_reg.entities.values():
+        if entity.domain == "scene" and entity.area_id:
+            area_ids.add(entity.area_id)
+            
     entities = []
-    for area_id in store.data.get("areas", {}):
+    for area_id in area_ids:
         area = area_reg.async_get_area(area_id)
         area_name = area.name if area else area_id
         entities.append(AdaptiveSceneLight(hass, area_id, area_name))
         
     async_add_entities(entities)
+    
+    known_areas = set(area_ids)
+
+    from homeassistant.core import Event, callback
+
+    @callback
+    def _async_entity_registry_updated(event: Event) -> None:
+        if event.data.get("action") == "create":
+            entity_id = event.data.get("entity_id")
+            if entity_id and entity_id.startswith("scene."):
+                entity = entity_reg.async_get(entity_id)
+                if entity and entity.area_id and entity.area_id not in known_areas:
+                    known_areas.add(entity.area_id)
+                    area = area_reg.async_get_area(entity.area_id)
+                    area_name = area.name if area else entity.area_id
+                    async_add_entities([AdaptiveSceneLight(hass, entity.area_id, area_name)])
+                    
+    hass.bus.async_listen("entity_registry_updated", _async_entity_registry_updated)
 
 class AdaptiveSceneLight(LightEntity):
     """Virtual light to trigger adaptive scenes or interpolate scenes for an area."""
@@ -71,6 +97,102 @@ class AdaptiveSceneLight(LightEntity):
         self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
         self._attr_is_on = False
         self._attr_brightness = 255
+        self._light_entities = []
+        self._interpolated_brightness = None
+        self._last_interaction_time = 0
+
+    async def async_added_to_hass(self):
+        """Run when entity about to be added to hass."""
+        from homeassistant.helpers import entity_registry as er
+        from homeassistant.helpers import device_registry as dr
+        from homeassistant.helpers.event import async_track_state_change_event
+        from homeassistant.core import callback
+
+        entity_reg = er.async_get(self.hass)
+        device_reg = dr.async_get(self.hass)
+        
+        devices_in_area = {
+            device.id
+            for device in device_reg.devices.values()
+            if device.area_id == self._area_id
+        }
+        
+        self._light_entities = []
+        for entity in entity_reg.entities.values():
+            if entity.domain == "light" and entity.entity_id != self.entity_id:
+                if entity.area_id == self._area_id or (entity.area_id is None and entity.device_id in devices_in_area):
+                    self._light_entities.append(entity.entity_id)
+                    
+        _LOGGER.warning("SceneManager Light %s tracking entities: %s", self._area_id, self._light_entities)
+
+        @callback
+        def _async_light_state_changed(event):
+            import time
+            if time.time() - getattr(self, "_last_interaction_time", 0) > 3:
+                self._interpolated_brightness = None
+            self._update_state_from_lights()
+            self.async_write_ha_state()
+
+        @callback
+        def _async_scene_changed(event):
+            if event.data.get("area_id") == self._area_id:
+                import time
+                self._last_interaction_time = time.time()
+                scene_id = event.data.get("scene_id")
+                config = self.hass.data[DOMAIN]["store"].get_virtual_light_config(self._area_id)
+                if config.get("interpolation_enabled"):
+                    mapping = config.get("mapping", {})
+                    if scene_id in mapping:
+                        self._interpolated_brightness = int((mapping[scene_id] / 100.0) * 255)
+                    else:
+                        self._interpolated_brightness = None
+                else:
+                    self._interpolated_brightness = None
+                    
+                self._update_state_from_lights()
+                self.async_write_ha_state()
+
+        if self._light_entities:
+            self._update_state_from_lights()
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self.hass, self._light_entities, _async_light_state_changed
+                )
+            )
+            
+        self.async_on_remove(
+            self.hass.bus.async_listen("scene_manager_active_scene_changed", _async_scene_changed)
+        )
+
+    def _update_state_from_lights(self):
+        """Update is_on based on child lights in the area."""
+        if not getattr(self, "_light_entities", None):
+            return
+            
+        any_on = False
+        total_brightness = 0
+        on_count = 0
+        for entity_id in self._light_entities:
+            state = self.hass.states.get(entity_id)
+            if state and state.state == "on":
+                any_on = True
+                total_brightness += state.attributes.get(ATTR_BRIGHTNESS, 255)
+                on_count += 1
+                
+        self._attr_is_on = any_on
+        
+        if not any_on:
+            self._attr_brightness = None
+            return
+            
+        if self._interpolated_brightness is not None:
+            self._attr_brightness = self._interpolated_brightness
+            return
+            
+        if on_count > 0:
+            self._attr_brightness = int(total_brightness / on_count)
+            
+        _LOGGER.warning("SceneManager Light %s calculated brightness: %s", self._area_id, self._attr_brightness)
 
     @property
     def available(self) -> bool:
@@ -80,10 +202,19 @@ class AdaptiveSceneLight(LightEntity):
 
     async def async_turn_on(self, **kwargs):
         """Turn the light on, triggering adaptive scene or specific brightness."""
+        import time
+        self._last_interaction_time = time.time()
+        
         transition = kwargs.get(ATTR_TRANSITION)
         config = self.hass.data[DOMAIN]["store"].get_virtual_light_config(self._area_id)
         
         if ATTR_BRIGHTNESS in kwargs and config.get("interpolation_enabled"):
+            self._interpolated_brightness = kwargs[ATTR_BRIGHTNESS]
+            
+            # Clear active scene so it tracks our new interpolated value
+            if "cycle_state" in self.hass.data[DOMAIN]:
+                self.hass.data[DOMAIN]["cycle_state"].pop(self._area_id, None)
+                
             target_pct = kwargs[ATTR_BRIGHTNESS] / 255.0 * 100.0
             mapping = config.get("mapping", {})
             if len(mapping) >= 2:
