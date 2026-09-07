@@ -248,11 +248,11 @@ class AdaptiveSceneLight(LightEntity):
                 lower_states = await self.hass.async_add_executor_job(_get_scene_entity_states, self.hass, lower[0])
                 upper_states = await self.hass.async_add_executor_job(_get_scene_entity_states, self.hass, upper[0])
 
-                if lower_states and upper_states:
-                    for entity_id, lower_state in lower_states.items():
-                        upper_state = upper_states.get(entity_id)
-                        if not upper_state:
-                            continue
+                if lower_states or upper_states:
+                    all_entities = set(lower_states.keys()) | set(upper_states.keys())
+                    for entity_id in all_entities:
+                        lower_state = lower_states.get(entity_id, {"state": "off"})
+                        upper_state = upper_states.get(entity_id, {"state": "off"})
                         
                         service_data = {"entity_id": entity_id}
                         if transition is not None:
@@ -262,19 +262,41 @@ class AdaptiveSceneLight(LightEntity):
                             await self.hass.services.async_call("light", "turn_off", service_data)
                             continue
 
-                        lb = lower_state.get("brightness", 0 if lower_state.get("state") == "off" else 255)
-                        ub = upper_state.get("brightness", 0 if upper_state.get("state") == "off" else 255)
+                        lb = lower_state.get("brightness")
+                        if lb is None:
+                            lb = 0 if lower_state.get("state") == "off" else 255
+                            
+                        ub = upper_state.get("brightness")
+                        if ub is None:
+                            ub = 0 if upper_state.get("state") == "off" else 255
                         
-                        target_b = _interpolate_value(lb, ub, fraction)
-                        service_data["brightness"] = int(target_b)
+                        target_b = int(_interpolate_value(lb, ub, fraction))
+                        
+                        if target_b == 0:
+                            turn_off_data = {"entity_id": entity_id}
+                            if transition is not None:
+                                turn_off_data["transition"] = transition
+                            await self.hass.services.async_call("light", "turn_off", turn_off_data)
+                            continue
+                            
+                        service_data["brightness"] = target_b
 
                         color_mode = lower_state.get("color_mode", upper_state.get("color_mode"))
                         
                         if color_mode == "color_temp":
                             if "color_temp_kelvin" in lower_state and "color_temp_kelvin" in upper_state:
                                 service_data["color_temp_kelvin"] = int(_interpolate_value(lower_state["color_temp_kelvin"], upper_state["color_temp_kelvin"], fraction))
-                            elif "color_temp" in lower_state and "color_temp" in upper_state:
+                            elif "color_temp_kelvin" in upper_state and lower_state.get("state") == "off":
+                                service_data["color_temp_kelvin"] = upper_state["color_temp_kelvin"]
+                            elif "color_temp_kelvin" in lower_state and upper_state.get("state") == "off":
+                                service_data["color_temp_kelvin"] = lower_state["color_temp_kelvin"]
+                                
+                            if "color_temp" in lower_state and "color_temp" in upper_state:
                                 service_data["color_temp"] = int(_interpolate_value(lower_state["color_temp"], upper_state["color_temp"], fraction))
+                            elif "color_temp" in upper_state and lower_state.get("state") == "off":
+                                service_data["color_temp"] = upper_state["color_temp"]
+                            elif "color_temp" in lower_state and upper_state.get("state") == "off":
+                                service_data["color_temp"] = lower_state["color_temp"]
                         elif color_mode in ("hs", "xy", "rgb", "rgbw", "rgbww"):
                             if "rgb_color" in lower_state and "rgb_color" in upper_state:
                                 lr, lg, lb_c = lower_state["rgb_color"]
@@ -284,12 +306,26 @@ class AdaptiveSceneLight(LightEntity):
                                     int(_interpolate_value(lg, ug, fraction)),
                                     int(_interpolate_value(lb_c, ub_c, fraction))
                                 ]
+                            elif "rgb_color" in upper_state and lower_state.get("state") == "off":
+                                service_data["rgb_color"] = upper_state["rgb_color"]
+                            elif "rgb_color" in lower_state and upper_state.get("state") == "off":
+                                service_data["rgb_color"] = lower_state["rgb_color"]
                         else:
                             # Fallback if color_mode is missing
                             if "color_temp_kelvin" in lower_state and "color_temp_kelvin" in upper_state:
                                 service_data["color_temp_kelvin"] = int(_interpolate_value(lower_state["color_temp_kelvin"], upper_state["color_temp_kelvin"], fraction))
+                            elif "color_temp_kelvin" in upper_state and lower_state.get("state") == "off":
+                                service_data["color_temp_kelvin"] = upper_state["color_temp_kelvin"]
+                            elif "color_temp_kelvin" in lower_state and upper_state.get("state") == "off":
+                                service_data["color_temp_kelvin"] = lower_state["color_temp_kelvin"]
+                                
                             elif "color_temp" in lower_state and "color_temp" in upper_state:
                                 service_data["color_temp"] = int(_interpolate_value(lower_state["color_temp"], upper_state["color_temp"], fraction))
+                            elif "color_temp" in upper_state and lower_state.get("state") == "off":
+                                service_data["color_temp"] = upper_state["color_temp"]
+                            elif "color_temp" in lower_state and upper_state.get("state") == "off":
+                                service_data["color_temp"] = lower_state["color_temp"]
+                                
                             elif "rgb_color" in lower_state and "rgb_color" in upper_state:
                                 lr, lg, lb_c = lower_state["rgb_color"]
                                 ur, ug, ub_c = upper_state["rgb_color"]
@@ -298,6 +334,10 @@ class AdaptiveSceneLight(LightEntity):
                                     int(_interpolate_value(lg, ug, fraction)),
                                     int(_interpolate_value(lb_c, ub_c, fraction))
                                 ]
+                            elif "rgb_color" in upper_state and lower_state.get("state") == "off":
+                                service_data["rgb_color"] = upper_state["rgb_color"]
+                            elif "rgb_color" in lower_state and upper_state.get("state") == "off":
+                                service_data["rgb_color"] = lower_state["rgb_color"]
 
                         if service_data.get("brightness", 1) > 0:
                             await self.hass.services.async_call("light", "turn_on", service_data)
