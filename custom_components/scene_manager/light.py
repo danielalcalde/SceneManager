@@ -83,6 +83,17 @@ async def async_setup_platform(
                     async_add_entities([AdaptiveSceneLight(hass, entity.area_id, area_name)])
                     
     hass.bus.async_listen("entity_registry_updated", _async_entity_registry_updated)
+    
+    @callback
+    def _async_area_configured(event: Event) -> None:
+        area_id = event.data.get("area_id")
+        if area_id and area_id not in known_areas:
+            known_areas.add(area_id)
+            area = area_reg.async_get_area(area_id)
+            area_name = area.name if area else area_id
+            async_add_entities([AdaptiveSceneLight(hass, area_id, area_name)])
+            
+    hass.bus.async_listen("scene_manager_area_configured", _async_area_configured)
 
 class AdaptiveSceneLight(LightEntity):
     """Virtual light to trigger adaptive scenes or interpolate scenes for an area."""

@@ -40,6 +40,7 @@ async def ws_save_schedules(hass: HomeAssistant, connection: websocket_api.Activ
     """Handle save schedules command."""
     store = hass.data[DOMAIN]["store"]
     await store.async_update_area_schedules(msg["area_id"], msg["schedules"])
+    hass.bus.async_fire("scene_manager_area_configured", {"area_id": msg["area_id"]})
     connection.send_result(msg["id"], {"success": True})
 
 @websocket_api.websocket_command({
@@ -68,6 +69,7 @@ async def ws_save_rotation_config(hass: HomeAssistant, connection: websocket_api
     """Handle save rotation config command."""
     store = hass.data[DOMAIN]["store"]
     await store.async_update_rotation_config(msg["area_id"], msg["excluded_scenes"])
+    hass.bus.async_fire("scene_manager_area_configured", {"area_id": msg["area_id"]})
     connection.send_result(msg["id"], {"success": True})
 
 @websocket_api.websocket_command({
@@ -91,4 +93,5 @@ async def ws_save_virtual_light_config(hass: HomeAssistant, connection: websocke
     """Handle save virtual light config command."""
     store = hass.data[DOMAIN]["store"]
     await store.async_update_virtual_light_config(msg["area_id"], msg["config"])
+    hass.bus.async_fire("scene_manager_area_configured", {"area_id": msg["area_id"]})
     connection.send_result(msg["id"], {"success": True})
