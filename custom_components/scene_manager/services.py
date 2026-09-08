@@ -133,9 +133,19 @@ async def async_setup_services(hass: HomeAssistant, store: SceneManagerStore):
         if transition is not None:
             service_data["transition"] = transition
             
+        config = store.get_virtual_light_config(area_id)
+        
         await hass.services.async_call(
             "scene", "turn_on", service_data, blocking=True
         )
+        
+        if config.get("double_trigger"):
+            import asyncio
+            async def _double_trigger_scene():
+                await asyncio.sleep(config.get("double_trigger_delay", 0.5))
+                await hass.services.async_call("scene", "turn_on", service_data, blocking=True)
+            hass.async_create_task(_double_trigger_scene())
+            
         hass.bus.async_fire("scene_manager_active_scene_changed", {
             "area_id": area_id,
             "scene_id": scene_to_activate
@@ -166,9 +176,19 @@ async def async_setup_services(hass: HomeAssistant, store: SceneManagerStore):
             if transition is not None:
                 service_data["transition"] = transition
                 
+            config = store.get_virtual_light_config(area_id)
+                
             await hass.services.async_call(
                 "scene", "turn_on", service_data, blocking=True
             )
+            
+            if config.get("double_trigger"):
+                import asyncio
+                async def _double_trigger_adaptive():
+                    await asyncio.sleep(config.get("double_trigger_delay", 0.5))
+                    await hass.services.async_call("scene", "turn_on", service_data, blocking=True)
+                hass.async_create_task(_double_trigger_adaptive())
+                
             hass.bus.async_fire("scene_manager_active_scene_changed", {
                 "area_id": area_id,
                 "scene_id": active_scene

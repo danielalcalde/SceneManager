@@ -56,6 +56,8 @@ class SceneManagerStore:
         return self.data["virtual_light"].get(area_id, {
             "enabled": True,
             "interpolation_enabled": False,
+            "double_trigger": False,
+            "double_trigger_delay": 0.5,
             "mapping": {}
         })
 

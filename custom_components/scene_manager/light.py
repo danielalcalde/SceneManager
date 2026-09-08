@@ -250,6 +250,8 @@ class AdaptiveSceneLight(LightEntity):
 
                 if lower_states or upper_states:
                     all_entities = set(lower_states.keys()) | set(upper_states.keys())
+                    calls = []
+                    
                     for entity_id in all_entities:
                         lower_state = lower_states.get(entity_id, {"state": "off"})
                         upper_state = upper_states.get(entity_id, {"state": "off"})
@@ -259,7 +261,7 @@ class AdaptiveSceneLight(LightEntity):
                             service_data["transition"] = transition
 
                         if lower_state.get("state") == "off" and upper_state.get("state") == "off":
-                            await self.hass.services.async_call("light", "turn_off", service_data)
+                            calls.append(("light", "turn_off", service_data, None))
                             continue
 
                         lb = lower_state.get("brightness")
@@ -276,7 +278,7 @@ class AdaptiveSceneLight(LightEntity):
                             turn_off_data = {"entity_id": entity_id}
                             if transition is not None:
                                 turn_off_data["transition"] = transition
-                            await self.hass.services.async_call("light", "turn_off", turn_off_data)
+                            calls.append(("light", "turn_off", turn_off_data, None))
                             continue
                             
                         service_data["brightness"] = target_b
@@ -340,9 +342,27 @@ class AdaptiveSceneLight(LightEntity):
                                 service_data["rgb_color"] = lower_state["rgb_color"]
 
                         if service_data.get("brightness", 1) > 0:
-                            await self.hass.services.async_call("light", "turn_on", service_data)
+                            calls.append(("light", "turn_on", service_data, None))
                         else:
-                            await self.hass.services.async_call("light", "turn_off", {"entity_id": entity_id})
+                            calls.append(("light", "turn_off", {"entity_id": entity_id}, None))
+                    
+                    async def _execute_calls():
+                        for domain, svc, svc_data, target in calls:
+                            if target:
+                                await self.hass.services.async_call(domain, svc, svc_data, target=target)
+                            else:
+                                await self.hass.services.async_call(domain, svc, svc_data)
+                                
+                        if config.get("double_trigger"):
+                            import asyncio
+                            await asyncio.sleep(config.get("double_trigger_delay", 0.5))
+                            for domain, svc, svc_data, target in calls:
+                                if target:
+                                    await self.hass.services.async_call(domain, svc, svc_data, target=target)
+                                else:
+                                    await self.hass.services.async_call(domain, svc, svc_data)
+                    
+                    self.hass.async_create_task(_execute_calls())
                     
                     self._attr_brightness = kwargs[ATTR_BRIGHTNESS]
                     self._attr_is_on = True
@@ -350,17 +370,36 @@ class AdaptiveSceneLight(LightEntity):
                     return
 
         # Fallback if interpolation is off, mapping is invalid, or no brightness provided
+        calls = []
         if ATTR_BRIGHTNESS in kwargs:
             data = {"brightness": kwargs[ATTR_BRIGHTNESS]}
             if transition is not None:
                 data["transition"] = transition
-            await self.hass.services.async_call("light", "turn_on", data, target={"area_id": self._area_id})
+            calls.append(("light", "turn_on", data, {"area_id": self._area_id}))
             self._attr_brightness = kwargs[ATTR_BRIGHTNESS]
         else:
             data = {"area_id": self._area_id}
             if transition is not None:
                 data["transition"] = transition
-            await self.hass.services.async_call(DOMAIN, SERVICE_TURN_ON_ADAPTIVE, data)
+            calls.append((DOMAIN, SERVICE_TURN_ON_ADAPTIVE, data, None))
+            
+        async def _execute_fallback():
+            for domain, svc, svc_data, target in calls:
+                if target:
+                    await self.hass.services.async_call(domain, svc, svc_data, target=target)
+                else:
+                    await self.hass.services.async_call(domain, svc, svc_data)
+                    
+            if config.get("double_trigger"):
+                import asyncio
+                await asyncio.sleep(config.get("double_trigger_delay", 0.5))
+                for domain, svc, svc_data, target in calls:
+                    if target:
+                        await self.hass.services.async_call(domain, svc, svc_data, target=target)
+                    else:
+                        await self.hass.services.async_call(domain, svc, svc_data)
+                        
+        self.hass.async_create_task(_execute_fallback())
             
         self._attr_is_on = True
         self.async_write_ha_state()

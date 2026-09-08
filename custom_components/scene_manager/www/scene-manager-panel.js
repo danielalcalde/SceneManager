@@ -95,13 +95,13 @@ class SceneManagerPanel extends HTMLElement {
       this.setState({ 
         schedules: response || [], 
         rotation: rotationState || { excluded_scenes: [], current_scene_id: null },
-        virtual_light: virtualLightState || { enabled: true, interpolation_enabled: false, mapping: {} },
+        virtual_light: virtualLightState || { enabled: true, interpolation_enabled: false, double_trigger: false, double_trigger_delay: 0.5, mapping: {} },
         loading: false, 
         selectedArea: areaId 
       });
     } catch (e) {
       console.error("Error fetching area data:", e);
-      this.setState({ schedules: [], rotation: { excluded_scenes: [], current_scene_id: null }, virtual_light: { enabled: true, interpolation_enabled: false, mapping: {} }, loading: false, selectedArea: areaId });
+      this.setState({ schedules: [], rotation: { excluded_scenes: [], current_scene_id: null }, virtual_light: { enabled: true, interpolation_enabled: false, double_trigger: false, double_trigger_delay: 0.5, mapping: {} }, loading: false, selectedArea: areaId });
     }
   }
 
@@ -144,6 +144,14 @@ class SceneManagerPanel extends HTMLElement {
 
   toggleVirtualLight(enabled) {
     this.setState({ virtual_light: { ...this.state.virtual_light, enabled: enabled } });
+  }
+
+  toggleDoubleTrigger(enabled) {
+    this.setState({ virtual_light: { ...this.state.virtual_light, double_trigger: enabled } });
+  }
+
+  updateDoubleTriggerDelay(delay) {
+    this.setState({ virtual_light: { ...this.state.virtual_light, double_trigger_delay: parseFloat(delay) || 0.5 } });
   }
 
   toggleInterpolation(enabled) {
@@ -538,6 +546,26 @@ class SceneManagerPanel extends HTMLElement {
                   Scrub the Virtual Light brightness slider (0-100%) to smoothly blend between different scenes. 
                   <strong style="color: var(--warning-color, #ff9800);">⚠️ Note: True interpolation ONLY works with native HA scenes (created in the UI).</strong> Hub-imported scenes (Hue, etc) are not supported.
                 </p>
+
+                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--primary-text-color); margin-top: 16px;">
+                  <input type="checkbox" style="width:16px; height:16px;"
+                         ${this.state.virtual_light?.double_trigger ? 'checked' : ''} 
+                         onchange="this.getRootNode().host.toggleDoubleTrigger(this.checked)">
+                  <strong>Enable Double Trigger (Hardware Bug Workaround)</strong>
+                </label>
+                <p style="margin-top:4px; margin-bottom:8px; font-size: 0.9em; color: var(--secondary-text-color);">
+                  Sends commands twice with a small delay. Enable this if your bulbs glitch or ignore color/brightness changes when waking up from an off state.
+                </p>
+                
+                ${this.state.virtual_light?.double_trigger ? `
+                  <div style="margin-left: 24px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px;">
+                    <label style="color: var(--primary-text-color);">Delay (seconds):</label>
+                    <input type="number" step="0.1" min="0" max="5" class="input-text short"
+                           value="${this.state.virtual_light?.double_trigger_delay ?? 0.5}"
+                           onchange="this.getRootNode().host.updateDoubleTriggerDelay(this.value)">
+                  </div>
+                ` : ''}
+                
                 
                 ${this.state.virtual_light?.interpolation_enabled ? `
                   <div style="margin-top: 12px; background: rgba(0,0,0,0.02); padding: 12px; border-radius: 4px; border: 1px solid var(--divider-color, #e0e0e0);">
