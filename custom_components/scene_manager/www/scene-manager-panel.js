@@ -125,12 +125,20 @@ class SceneManagerPanel extends HTMLElement {
         area_id: this.state.selectedArea,
         config: this.state.virtual_light
       });
-      alert("Settings saved successfully!");
+      this.showToast("Settings saved successfully!");
     } catch (e) {
       console.error("Error saving settings:", e);
-      alert("Failed to save settings.");
+      this.showToast("Failed to save settings.", true);
     }
     this.setState({ loading: false });
+  }
+
+  showToast(message, isError = false) {
+    this.setState({ toastMessage: message, toastError: isError });
+    if (this._toastTimeout) clearTimeout(this._toastTimeout);
+    this._toastTimeout = setTimeout(() => {
+      this.setState({ toastMessage: null });
+    }, 3000);
   }
 
   toggleRotationInclusion(sceneId) {
@@ -542,8 +550,35 @@ class SceneManagerPanel extends HTMLElement {
           background-color: transparent;
           padding: 0;
         }
+        .toast {
+          position: fixed;
+          bottom: 24px;
+          left: 50%;
+          transform: translateX(-50%);
+          background-color: var(--primary-color, #03a9f4);
+          color: white;
+          padding: 12px 24px;
+          border-radius: 24px;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+          z-index: 1000;
+          font-weight: 500;
+          animation: slideUp 0.3s ease-out;
+        }
+        .toast.error {
+          background-color: var(--error-color, #f44336);
+        }
+        @keyframes slideUp {
+          from { transform: translate(-50%, 100%); opacity: 0; }
+          to { transform: translate(-50%, 0); opacity: 1; }
+        }
       </style>
       
+      ${this.state.toastMessage ? `
+        <div class="toast ${this.state.toastError ? 'error' : ''}">
+          ${this.state.toastMessage}
+        </div>
+      ` : ''}
+
       <div class="header">
         <h1>Scene Manager</h1>
       </div>
