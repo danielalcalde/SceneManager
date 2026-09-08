@@ -143,6 +143,26 @@ class SceneManagerPanel extends HTMLElement {
     this.setState({ rotation: { ...this.state.rotation, excluded_scenes: excluded } });
   }
 
+  async copyScheduleFrom(sourceAreaId) {
+    if (!sourceAreaId) return;
+    try {
+      this.setState({ loading: true });
+      const response = await this._hass.callWS({
+        type: "scene_manager/get_schedules",
+        area_id: sourceAreaId
+      });
+      
+      const copiedSchedules = (response || []).map(s => {
+        return { ...s, scene_id: "" };
+      });
+      
+      this.setState({ schedules: copiedSchedules, loading: false });
+    } catch(e) {
+      console.error("Error copying schedules", e);
+      this.setState({ loading: false });
+    }
+  }
+
   toggleVirtualLight(enabled) {
     this.setState({ virtual_light: { ...this.state.virtual_light, enabled: enabled } });
   }
@@ -681,11 +701,25 @@ class SceneManagerPanel extends HTMLElement {
         <div class="schedules">
           ${this.state.schedules.length === 0 ? `
             <div class="empty-state card">
-              <svg viewBox="0 0 24 24"><path d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4M11,7V11H7V13H11V17H13V13H17V11H13V7H11Z" /></svg>
+              <svg viewBox="0 0 24 24"><path d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4M11,7V11H7V13H11V17H13V17H17V11H13V7H11Z" /></svg>
               <h3>No schedules configured</h3>
               <p>Click "Add New Schedule" below to create your first adaptive scene for this area.</p>
+              
+              <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--divider-color, #e0e0e0);">
+                <label style="color: var(--secondary-text-color); font-size: 0.9em;">Or copy times from another area:</label>
+                <div style="display: flex; gap: 8px; justify-content: center; margin-top: 8px; align-items: center;">
+                  <select class="input-select" style="max-width: 250px; flex: 1;" id="copy-area-select">
+                    <option value="" disabled selected>Select an Area...</option>
+                    ${areas.filter(a => a.area_id !== this.state.selectedArea).map(area => 
+                      `<option value="${area.area_id}">${area.name}</option>`
+                    ).join('')}
+                  </select>
+                  <button class="btn btn-secondary" onclick="this.getRootNode().host.copyScheduleFrom(this.previousElementSibling.value)">Copy Times</button>
+                </div>
+              </div>
             </div>
           ` : schedulesHtml}
+        </div>
           
           <button class="btn" style="margin-bottom: 24px;" onclick="this.getRootNode().host.addSchedule()">
             <svg style="width:20px;height:20px;fill:currentColor;margin-right:4px;" viewBox="0 0 24 24"><path d="M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z" /></svg>
