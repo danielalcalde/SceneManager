@@ -101,8 +101,20 @@ async def async_setup_services(hass: HomeAssistant, store: SceneManagerStore):
         transition = call.data.get(CONF_TRANSITION)
         
         all_scenes = get_scenes_for_area(area_id)
-        excluded_scenes = store.get_rotation_config(area_id)
-        scenes = [s for s in all_scenes if s not in excluded_scenes]
+        rot_config = store.get_rotation_config(area_id)
+        excluded_scenes = rot_config.get("excluded_scenes", [])
+        scene_order = rot_config.get("scene_order", [])
+
+        # Build scenes list respecting order
+        scenes = []
+        for s in scene_order:
+            if s in all_scenes and s not in excluded_scenes and s not in scenes:
+                scenes.append(s)
+                
+        # Then append any remaining scenes that aren't excluded
+        for s in all_scenes:
+            if s not in excluded_scenes and s not in scenes:
+                scenes.append(s)
 
         if not scenes:
             _LOGGER.warning("No scenes found for area %s (all excluded or none exist?)", area_id)
@@ -142,9 +154,19 @@ async def async_setup_services(hass: HomeAssistant, store: SceneManagerStore):
         if config.get("double_trigger"):
             import asyncio
             async def _double_trigger_scene():
-                await asyncio.sleep(config.get("double_trigger_delay", 0.5))
-                await hass.services.async_call("scene", "turn_on", service_data, blocking=True)
-            hass.async_create_task(_double_trigger_scene())
+                try:
+                    await asyncio.sleep(config.get("double_trigger_delay", 0.5))
+                    await hass.services.async_call("scene", "turn_on", service_data, blocking=True)
+                except asyncio.CancelledError:
+                    pass
+                    
+            if "double_trigger_tasks" not in hass.data[DOMAIN]:
+                hass.data[DOMAIN]["double_trigger_tasks"] = {}
+                
+            if area_id in hass.data[DOMAIN]["double_trigger_tasks"]:
+                hass.data[DOMAIN]["double_trigger_tasks"][area_id].cancel()
+                
+            hass.data[DOMAIN]["double_trigger_tasks"][area_id] = hass.async_create_task(_double_trigger_scene())
             
         hass.bus.async_fire("scene_manager_active_scene_changed", {
             "area_id": area_id,
@@ -185,9 +207,19 @@ async def async_setup_services(hass: HomeAssistant, store: SceneManagerStore):
             if config.get("double_trigger"):
                 import asyncio
                 async def _double_trigger_adaptive():
-                    await asyncio.sleep(config.get("double_trigger_delay", 0.5))
-                    await hass.services.async_call("scene", "turn_on", service_data, blocking=True)
-                hass.async_create_task(_double_trigger_adaptive())
+                    try:
+                        await asyncio.sleep(config.get("double_trigger_delay", 0.5))
+                        await hass.services.async_call("scene", "turn_on", service_data, blocking=True)
+                    except asyncio.CancelledError:
+                        pass
+                        
+                if "double_trigger_tasks" not in hass.data[DOMAIN]:
+                    hass.data[DOMAIN]["double_trigger_tasks"] = {}
+                    
+                if area_id in hass.data[DOMAIN]["double_trigger_tasks"]:
+                    hass.data[DOMAIN]["double_trigger_tasks"][area_id].cancel()
+                    
+                hass.data[DOMAIN]["double_trigger_tasks"][area_id] = hass.async_create_task(_double_trigger_adaptive())
                 
             hass.bus.async_fire("scene_manager_active_scene_changed", {
                 "area_id": area_id,

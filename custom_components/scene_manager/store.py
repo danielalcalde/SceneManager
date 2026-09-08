@@ -43,13 +43,19 @@ class SceneManagerStore:
         self.data["areas"][area_id] = schedules
         await self.async_save()
 
-    def get_rotation_config(self, area_id: str) -> list:
-        """Get excluded scenes for an area."""
-        return self.data["rotation"].get(area_id, [])
+    def get_rotation_config(self, area_id: str) -> dict:
+        """Get rotation config for an area."""
+        data = self.data["rotation"].get(area_id, {})
+        if isinstance(data, list):
+            return {"excluded_scenes": data, "scene_order": []}
+        return {
+            "excluded_scenes": data.get("excluded_scenes", []),
+            "scene_order": data.get("scene_order", [])
+        }
 
-    async def async_update_rotation_config(self, area_id: str, excluded_scenes: list):
-        """Update excluded scenes for an area and save."""
-        self.data["rotation"][area_id] = excluded_scenes
+    async def async_update_rotation_config(self, area_id: str, config: dict):
+        """Update rotation config for an area and save."""
+        self.data["rotation"][area_id] = config
         await self.async_save()
     def get_virtual_light_config(self, area_id: str) -> dict:
         """Get virtual light config for an area."""

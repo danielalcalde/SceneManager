@@ -52,23 +52,29 @@ def ws_get_rotation_state(hass: HomeAssistant, connection: websocket_api.ActiveC
     """Handle get rotation state command."""
     store = hass.data[DOMAIN]["store"]
     area_id = msg["area_id"]
-    excluded = store.get_rotation_config(area_id)
+    rot_config = store.get_rotation_config(area_id)
     current = hass.data[DOMAIN]["cycle_state"].get(area_id)
     connection.send_result(msg["id"], {
-        "excluded_scenes": excluded,
+        "excluded_scenes": rot_config.get("excluded_scenes", []),
+        "scene_order": rot_config.get("scene_order", []),
         "current_scene_id": current
     })
 
 @websocket_api.websocket_command({
     vol.Required("type"): "scene_manager/save_rotation_config",
     vol.Required("area_id"): str,
-    vol.Required("excluded_scenes"): list,
+    vol.Optional("excluded_scenes"): list,
+    vol.Optional("scene_order"): list,
 })
 @websocket_api.async_response
 async def ws_save_rotation_config(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict):
     """Handle save rotation config command."""
     store = hass.data[DOMAIN]["store"]
-    await store.async_update_rotation_config(msg["area_id"], msg["excluded_scenes"])
+    config = {
+        "excluded_scenes": msg.get("excluded_scenes", []),
+        "scene_order": msg.get("scene_order", [])
+    }
+    await store.async_update_rotation_config(msg["area_id"], config)
     hass.bus.async_fire("scene_manager_area_configured", {"area_id": msg["area_id"]})
     connection.send_result(msg["id"], {"success": True})
 

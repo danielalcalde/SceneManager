@@ -17,7 +17,7 @@ class SceneManagerPanel extends HTMLElement {
     this.state = {
       selectedArea: null,
       schedules: [],
-      rotation: { excluded_scenes: [], current_scene_id: null },
+      rotation: { excluded_scenes: [], scene_order: [], current_scene_id: null },
       virtual_light: { enabled: true, interpolation_enabled: false, mapping: {} },
       loading: false,
     };
@@ -94,14 +94,14 @@ class SceneManagerPanel extends HTMLElement {
       
       this.setState({ 
         schedules: response || [], 
-        rotation: rotationState || { excluded_scenes: [], current_scene_id: null },
+        rotation: rotationState || { excluded_scenes: [], scene_order: [], current_scene_id: null },
         virtual_light: virtualLightState || { enabled: true, interpolation_enabled: false, double_trigger: false, double_trigger_delay: 0.5, mapping: {} },
         loading: false, 
         selectedArea: areaId 
       });
     } catch (e) {
       console.error("Error fetching area data:", e);
-      this.setState({ schedules: [], rotation: { excluded_scenes: [], current_scene_id: null }, virtual_light: { enabled: true, interpolation_enabled: false, double_trigger: false, double_trigger_delay: 0.5, mapping: {} }, loading: false, selectedArea: areaId });
+      this.setState({ schedules: [], rotation: { excluded_scenes: [], scene_order: [], current_scene_id: null }, virtual_light: { enabled: true, interpolation_enabled: false, double_trigger: false, double_trigger_delay: 0.5, mapping: {} }, loading: false, selectedArea: areaId });
     }
   }
 
@@ -117,7 +117,8 @@ class SceneManagerPanel extends HTMLElement {
       await this._hass.callWS({
         type: "scene_manager/save_rotation_config",
         area_id: this.state.selectedArea,
-        excluded_scenes: this.state.rotation.excluded_scenes || []
+        excluded_scenes: this.state.rotation.excluded_scenes || [],
+        scene_order: this.state.rotation.scene_order || []
       });
       await this._hass.callWS({
         type: "scene_manager/save_virtual_light_config",
@@ -197,6 +198,43 @@ class SceneManagerPanel extends HTMLElement {
     } else {
       this.state.schedules = newSchedules;
     }
+  }
+
+  dragStart(e, index) {
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', index);
+    this.draggedItem = index;
+  }
+
+  dragOver(e, index) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  }
+
+  drop(e, targetIndex) {
+    e.preventDefault();
+    if (this.draggedItem === null || this.draggedItem === targetIndex) return;
+    
+    const allScenes = this.state.selectedArea ? this.getScenesForArea(this.state.selectedArea) : [];
+    let orderedSceneIds = [...(this.state.rotation.scene_order || [])];
+    
+    allScenes.forEach(scene => {
+      if (!orderedSceneIds.includes(scene.id)) {
+        orderedSceneIds.push(scene.id);
+      }
+    });
+
+    const itemToMove = orderedSceneIds[this.draggedItem];
+    orderedSceneIds.splice(this.draggedItem, 1);
+    orderedSceneIds.splice(targetIndex, 0, itemToMove);
+
+    this.setState({
+      rotation: {
+        ...this.state.rotation,
+        scene_order: orderedSceneIds
+      }
+    });
+    this.draggedItem = null;
   }
 
   renderCondition(type, isStart, schedule, index) {
@@ -602,14 +640,35 @@ class SceneManagerPanel extends HTMLElement {
             }</p>
             <p style="margin-bottom: 8px; color: var(--secondary-text-color);">Select which scenes are included when pressing a cycle button:</p>
             <div style="display:flex; flex-direction:column; gap:8px; padding-left:8px;">
-              ${availableScenes.map(scene => `
-                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--primary-text-color);">
-                  <input type="checkbox" style="width:16px; height:16px;"
-                         ${!(this.state.rotation.excluded_scenes || []).includes(scene.id) ? 'checked' : ''} 
-                         onchange="this.getRootNode().host.toggleRotationInclusion('${scene.id}')">
-                  ${scene.name}
-                </label>
-              `).join('')}
+              ${(function() {
+                let orderedScenes = [];
+                let sceneOrder = this.state.rotation.scene_order || [];
+                sceneOrder.forEach(sceneId => {
+                  const scene = availableScenes.find(s => s.id === sceneId);
+                  if (scene) orderedScenes.push(scene);
+                });
+                availableScenes.forEach(scene => {
+                  if (!orderedScenes.some(s => s.id === scene.id)) {
+                    orderedScenes.push(scene);
+                  }
+                });
+                return orderedScenes.map((scene, index) => `
+                  <div style="display:flex; align-items:center; gap:8px; padding: 4px; border: 1px solid transparent; border-radius: 4px;"
+                       draggable="true"
+                       ondragstart="this.getRootNode().host.dragStart(event, ${index})"
+                       ondragover="this.getRootNode().host.dragOver(event, ${index})"
+                       ondrop="this.getRootNode().host.drop(event, ${index})"
+                       onstyle="cursor: grab;">
+                    <svg style="width:20px;height:20px;fill:var(--secondary-text-color);cursor:grab;" viewBox="0 0 24 24"><path d="M11 18c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2zm-2-8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 4c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--primary-text-color); flex:1; margin:0;">
+                      <input type="checkbox" style="width:16px; height:16px;"
+                             ${!(this.state.rotation.excluded_scenes || []).includes(scene.id) ? 'checked' : ''} 
+                             onchange="this.getRootNode().host.toggleRotationInclusion('${scene.id}')">
+                      ${scene.name}
+                    </label>
+                  </div>
+                `).join('');
+              }).bind(this)()}
             </div>
           </div>
         </div>

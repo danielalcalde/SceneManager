@@ -346,23 +346,29 @@ class AdaptiveSceneLight(LightEntity):
                         else:
                             calls.append(("light", "turn_off", {"entity_id": entity_id}, None))
                     
-                    async def _execute_calls():
-                        for domain, svc, svc_data, target in calls:
-                            if target:
-                                await self.hass.services.async_call(domain, svc, svc_data, target=target)
-                            else:
-                                await self.hass.services.async_call(domain, svc, svc_data)
-                                
-                        if config.get("double_trigger"):
-                            import asyncio
+                    async def _double_trigger_calls():
+                        import asyncio
+                        try:
                             await asyncio.sleep(config.get("double_trigger_delay", 0.5))
                             for domain, svc, svc_data, target in calls:
                                 if target:
                                     await self.hass.services.async_call(domain, svc, svc_data, target=target)
                                 else:
                                     await self.hass.services.async_call(domain, svc, svc_data)
-                    
-                    self.hass.async_create_task(_execute_calls())
+                        except asyncio.CancelledError:
+                            pass
+                            
+                    for domain, svc, svc_data, target in calls:
+                        if target:
+                            await self.hass.services.async_call(domain, svc, svc_data, target=target)
+                        else:
+                            await self.hass.services.async_call(domain, svc, svc_data)
+                            
+                    if getattr(self, "_active_double_trigger", None):
+                        self._active_double_trigger.cancel()
+                                
+                    if config.get("double_trigger"):
+                        self._active_double_trigger = self.hass.async_create_task(_double_trigger_calls())
                     
                     self._attr_brightness = kwargs[ATTR_BRIGHTNESS]
                     self._attr_is_on = True
@@ -383,23 +389,29 @@ class AdaptiveSceneLight(LightEntity):
                 data["transition"] = transition
             calls.append((DOMAIN, SERVICE_TURN_ON_ADAPTIVE, data, None))
             
-        async def _execute_fallback():
-            for domain, svc, svc_data, target in calls:
-                if target:
-                    await self.hass.services.async_call(domain, svc, svc_data, target=target)
-                else:
-                    await self.hass.services.async_call(domain, svc, svc_data)
-                    
-            if config.get("double_trigger"):
-                import asyncio
+        async def _double_trigger_fallback():
+            import asyncio
+            try:
                 await asyncio.sleep(config.get("double_trigger_delay", 0.5))
                 for domain, svc, svc_data, target in calls:
                     if target:
                         await self.hass.services.async_call(domain, svc, svc_data, target=target)
                     else:
                         await self.hass.services.async_call(domain, svc, svc_data)
-                        
-        self.hass.async_create_task(_execute_fallback())
+            except asyncio.CancelledError:
+                pass
+                
+        for domain, svc, svc_data, target in calls:
+            if target:
+                await self.hass.services.async_call(domain, svc, svc_data, target=target)
+            else:
+                await self.hass.services.async_call(domain, svc, svc_data)
+                
+        if getattr(self, "_active_double_trigger", None):
+            self._active_double_trigger.cancel()
+            
+        if config.get("double_trigger"):
+            self._active_double_trigger = self.hass.async_create_task(_double_trigger_fallback())
             
         self._attr_is_on = True
         self.async_write_ha_state()
