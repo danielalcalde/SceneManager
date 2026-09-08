@@ -6,14 +6,10 @@ Scene Manager is a custom Home Assistant integration that gives you powerful, UI
 
 ## Features
 
-- **Adaptive Lighting Schedules:** Create timetables for any Area. Define when a specific scene should be active (e.g., Morning Scene at sunrise, Day Scene at 10:00 AM).
-- **Smart Button Cycling:** Map your physical smart buttons (like Hue or IKEA remotes) to cycle forward or backward through your area's scenes with the `scene_manager.cycle_scene` service.
-- **Automatic Virtual Switches:** The integration automatically generates a Virtual Switch for each area to easily turn on/off the adaptive lighting logic.
-- **Virtual Lights with True Scene Interpolation:**
-  - Expose a Virtual Light for your area to Alexa, Google Home, or Matter.
-  - When a Virtual Light is turned on, it automatically calculates the current time and activates the appropriate scene from your schedule!
-  - Automatically proxies voice commands to your adaptive scenes.
-  - **Scene Interpolation:** Map scenes to specific brightness percentages (e.g., 20% = Night Scene, 100% = Day Scene). When you adjust the slider to 60%, the backend mathematically blends the RGB colors and brightness of your native Home Assistant scenes!
+- **Adaptive Lighting Schedules:** Build dynamic timetables for any room. Link your existing Home Assistant scenes to specific times of day or sun events (e.g., "Morning" at sunrise, "Day" at 10:00 AM). Whenever the room's Virtual Light is turned on, Scene Manager automatically calculates the current time and triggers the correct scene.
+- **True Scene Interpolation:** Go beyond basic toggling. Map your scenes to specific brightness milestones (e.g., 10% = Nightlight, 100% = Daylight). When you scrub the Virtual Light's brightness slider (or ask Alexa to dim the room to 50%), the backend mathematically blends the RGB colors, color temperatures, and brightness of your scenes to create a perfectly interpolated midpoint!
+- **Smart Button Cycling:** Give your physical smart switches (like Hue or IKEA remotes) superpowers. Use the `scene_manager.cycle_scene` service to seamlessly rotate through your favorite scenes with a single button press, while skipping any scenes you've explicitly hidden in the UI. *(Recommended to use alongside [SwitchManager](https://github.com/Sian-Lee-SA/Home-Assistant-Switch-Manager))*
+- **Voice Assistant Integration:** Automatically generate a single "Virtual Light" for each area that you can easily expose to Alexa, Google Home, or Apple HomeKit. Voice commands like "Turn on the Kitchen" instantly proxy to your dynamic adaptive schedule.
     
 ![Scene Manager Dashboard](images/screenshot.png)
 ## Installation
