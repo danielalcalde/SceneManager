@@ -98,7 +98,7 @@ async def async_setup_services(hass: HomeAssistant, store: SceneManagerStore):
     async def handle_cycle_scene(call: ServiceCall):
         area_id = call.data[CONF_AREA_ID]
         direction = call.data.get(CONF_DIRECTION, DIRECTION_FORWARD)
-        transition = call.data.get(CONF_TRANSITION, 0.5)
+        transition = call.data.get(CONF_TRANSITION)
         
         all_scenes = get_scenes_for_area(area_id)
         excluded_scenes = store.get_rotation_config(area_id)
@@ -128,8 +128,13 @@ async def async_setup_services(hass: HomeAssistant, store: SceneManagerStore):
         state[area_id] = scene_to_activate
         
         _LOGGER.debug("Activating scene %s (index %s)", scene_to_activate, next_idx)
+        
+        service_data = {"entity_id": scene_to_activate}
+        if transition is not None:
+            service_data["transition"] = transition
+            
         await hass.services.async_call(
-            "scene", "turn_on", {"entity_id": scene_to_activate, "transition": transition}, blocking=True
+            "scene", "turn_on", service_data, blocking=True
         )
         hass.bus.async_fire("scene_manager_active_scene_changed", {
             "area_id": area_id,
@@ -138,7 +143,7 @@ async def async_setup_services(hass: HomeAssistant, store: SceneManagerStore):
 
     async def handle_turn_on_adaptive(call: ServiceCall):
         area_id = call.data[CONF_AREA_ID]
-        transition = call.data.get(CONF_TRANSITION, 0.5)
+        transition = call.data.get(CONF_TRANSITION)
         schedules = store.get_area_schedules(area_id)
         
         if not schedules:
@@ -156,8 +161,13 @@ async def async_setup_services(hass: HomeAssistant, store: SceneManagerStore):
         if active_scene:
             _LOGGER.debug("Adaptive: Activating scene %s for area %s", active_scene, area_id)
             hass.data[DOMAIN]["cycle_state"][area_id] = active_scene
+            
+            service_data = {"entity_id": active_scene}
+            if transition is not None:
+                service_data["transition"] = transition
+                
             await hass.services.async_call(
-                "scene", "turn_on", {"entity_id": active_scene, "transition": transition}, blocking=True
+                "scene", "turn_on", service_data, blocking=True
             )
             hass.bus.async_fire("scene_manager_active_scene_changed", {
                 "area_id": area_id,
