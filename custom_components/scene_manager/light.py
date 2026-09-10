@@ -40,6 +40,27 @@ def _interpolate_value(val1, val2, fraction):
         return val1 if val1 is not None else val2
     return type(val1)(val1 + (val2 - val1) * fraction)
 
+def _get_brightness(state_dict):
+    """Get brightness from a state dict, defaulting appropriately if missing."""
+    b = state_dict.get("brightness")
+    if b is None:
+        return 0 if state_dict.get("state") == "off" else 255
+    return b
+
+def _apply_interpolated_attribute(service_data, attr_name, lower_state, upper_state, fraction):
+    """Interpolate an attribute (scalar or list) and add it to service_data."""
+    if attr_name in lower_state and attr_name in upper_state:
+        val1 = lower_state[attr_name]
+        val2 = upper_state[attr_name]
+        if isinstance(val1, (list, tuple)) and isinstance(val2, (list, tuple)) and len(val1) == len(val2):
+            service_data[attr_name] = [int(_interpolate_value(v1, v2, fraction)) for v1, v2 in zip(val1, val2)]
+        else:
+            service_data[attr_name] = int(_interpolate_value(val1, val2, fraction))
+    elif attr_name in upper_state and lower_state.get("state") == "off":
+        service_data[attr_name] = upper_state[attr_name]
+    elif attr_name in lower_state and upper_state.get("state") == "off":
+        service_data[attr_name] = lower_state[attr_name]
+
 async def async_setup_platform(
     hass: HomeAssistant,
     config: ConfigType,
@@ -70,28 +91,28 @@ async def async_setup_platform(
 
     from homeassistant.core import Event, callback
 
+    def _add_area_light(area_id: str) -> None:
+        if area_id and area_id not in known_areas:
+            known_areas.add(area_id)
+            area = area_reg.async_get_area(area_id)
+            area_name = area.name if area else area_id
+            async_add_entities([AdaptiveSceneLight(hass, area_id, area_name)])
+
     @callback
     def _async_entity_registry_updated(event: Event) -> None:
         if event.data.get("action") == "create":
             entity_id = event.data.get("entity_id")
             if entity_id and entity_id.startswith("scene."):
                 entity = entity_reg.async_get(entity_id)
-                if entity and entity.area_id and entity.area_id not in known_areas:
-                    known_areas.add(entity.area_id)
-                    area = area_reg.async_get_area(entity.area_id)
-                    area_name = area.name if area else entity.area_id
-                    async_add_entities([AdaptiveSceneLight(hass, entity.area_id, area_name)])
+                if entity and entity.area_id:
+                    _add_area_light(entity.area_id)
                     
     hass.bus.async_listen("entity_registry_updated", _async_entity_registry_updated)
     
     @callback
     def _async_area_configured(event: Event) -> None:
         area_id = event.data.get("area_id")
-        if area_id and area_id not in known_areas:
-            known_areas.add(area_id)
-            area = area_reg.async_get_area(area_id)
-            area_name = area.name if area else area_id
-            async_add_entities([AdaptiveSceneLight(hass, area_id, area_name)])
+        _add_area_light(area_id)
             
     hass.bus.async_listen("scene_manager_area_configured", _async_area_configured)
 
@@ -264,13 +285,8 @@ class AdaptiveSceneLight(LightEntity):
                             calls.append(("light", "turn_off", service_data, None))
                             continue
 
-                        lb = lower_state.get("brightness")
-                        if lb is None:
-                            lb = 0 if lower_state.get("state") == "off" else 255
-                            
-                        ub = upper_state.get("brightness")
-                        if ub is None:
-                            ub = 0 if upper_state.get("state") == "off" else 255
+                        lb = _get_brightness(lower_state)
+                        ub = _get_brightness(upper_state)
                         
                         target_b = int(_interpolate_value(lb, ub, fraction))
                         
@@ -286,90 +302,25 @@ class AdaptiveSceneLight(LightEntity):
                         color_mode = lower_state.get("color_mode", upper_state.get("color_mode"))
                         
                         if color_mode == "color_temp":
-                            if "color_temp_kelvin" in lower_state and "color_temp_kelvin" in upper_state:
-                                service_data["color_temp_kelvin"] = int(_interpolate_value(lower_state["color_temp_kelvin"], upper_state["color_temp_kelvin"], fraction))
-                            elif "color_temp_kelvin" in upper_state and lower_state.get("state") == "off":
-                                service_data["color_temp_kelvin"] = upper_state["color_temp_kelvin"]
-                            elif "color_temp_kelvin" in lower_state and upper_state.get("state") == "off":
-                                service_data["color_temp_kelvin"] = lower_state["color_temp_kelvin"]
-                                
-                            if "color_temp" in lower_state and "color_temp" in upper_state:
-                                service_data["color_temp"] = int(_interpolate_value(lower_state["color_temp"], upper_state["color_temp"], fraction))
-                            elif "color_temp" in upper_state and lower_state.get("state") == "off":
-                                service_data["color_temp"] = upper_state["color_temp"]
-                            elif "color_temp" in lower_state and upper_state.get("state") == "off":
-                                service_data["color_temp"] = lower_state["color_temp"]
+                            _apply_interpolated_attribute(service_data, "color_temp_kelvin", lower_state, upper_state, fraction)
+                            _apply_interpolated_attribute(service_data, "color_temp", lower_state, upper_state, fraction)
                         elif color_mode in ("hs", "xy", "rgb", "rgbw", "rgbww"):
-                            if "rgb_color" in lower_state and "rgb_color" in upper_state:
-                                lr, lg, lb_c = lower_state["rgb_color"]
-                                ur, ug, ub_c = upper_state["rgb_color"]
-                                service_data["rgb_color"] = [
-                                    int(_interpolate_value(lr, ur, fraction)),
-                                    int(_interpolate_value(lg, ug, fraction)),
-                                    int(_interpolate_value(lb_c, ub_c, fraction))
-                                ]
-                            elif "rgb_color" in upper_state and lower_state.get("state") == "off":
-                                service_data["rgb_color"] = upper_state["rgb_color"]
-                            elif "rgb_color" in lower_state and upper_state.get("state") == "off":
-                                service_data["rgb_color"] = lower_state["rgb_color"]
+                            _apply_interpolated_attribute(service_data, "rgb_color", lower_state, upper_state, fraction)
                         else:
                             # Fallback if color_mode is missing
-                            if "color_temp_kelvin" in lower_state and "color_temp_kelvin" in upper_state:
-                                service_data["color_temp_kelvin"] = int(_interpolate_value(lower_state["color_temp_kelvin"], upper_state["color_temp_kelvin"], fraction))
-                            elif "color_temp_kelvin" in upper_state and lower_state.get("state") == "off":
-                                service_data["color_temp_kelvin"] = upper_state["color_temp_kelvin"]
-                            elif "color_temp_kelvin" in lower_state and upper_state.get("state") == "off":
-                                service_data["color_temp_kelvin"] = lower_state["color_temp_kelvin"]
-                                
-                            elif "color_temp" in lower_state and "color_temp" in upper_state:
-                                service_data["color_temp"] = int(_interpolate_value(lower_state["color_temp"], upper_state["color_temp"], fraction))
-                            elif "color_temp" in upper_state and lower_state.get("state") == "off":
-                                service_data["color_temp"] = upper_state["color_temp"]
-                            elif "color_temp" in lower_state and upper_state.get("state") == "off":
-                                service_data["color_temp"] = lower_state["color_temp"]
-                                
-                            elif "rgb_color" in lower_state and "rgb_color" in upper_state:
-                                lr, lg, lb_c = lower_state["rgb_color"]
-                                ur, ug, ub_c = upper_state["rgb_color"]
-                                service_data["rgb_color"] = [
-                                    int(_interpolate_value(lr, ur, fraction)),
-                                    int(_interpolate_value(lg, ug, fraction)),
-                                    int(_interpolate_value(lb_c, ub_c, fraction))
-                                ]
-                            elif "rgb_color" in upper_state and lower_state.get("state") == "off":
-                                service_data["rgb_color"] = upper_state["rgb_color"]
-                            elif "rgb_color" in lower_state and upper_state.get("state") == "off":
-                                service_data["rgb_color"] = lower_state["rgb_color"]
+                            _apply_interpolated_attribute(service_data, "color_temp_kelvin", lower_state, upper_state, fraction)
+                            _apply_interpolated_attribute(service_data, "color_temp", lower_state, upper_state, fraction)
+                            _apply_interpolated_attribute(service_data, "rgb_color", lower_state, upper_state, fraction)
 
                         if service_data.get("brightness", 1) > 0:
                             calls.append(("light", "turn_on", service_data, None))
                         else:
                             calls.append(("light", "turn_off", {"entity_id": entity_id}, None))
                     
-                    async def _execute_calls():
-                        import asyncio
-                        try:
-                            await asyncio.sleep(0.1)  # 100ms debounce for Alexa rapid commands
-                            for domain, svc, svc_data, target in calls:
-                                if target:
-                                    await self.hass.services.async_call(domain, svc, svc_data, target=target)
-                                else:
-                                    await self.hass.services.async_call(domain, svc, svc_data)
-                                    
-                            if config.get("double_trigger"):
-                                await asyncio.sleep(config.get("double_trigger_delay", 0.5))
-                                for domain, svc, svc_data, target in calls:
-                                    if target:
-                                        await self.hass.services.async_call(domain, svc, svc_data, target=target)
-                                    else:
-                                        await self.hass.services.async_call(domain, svc, svc_data)
-                        except asyncio.CancelledError:
-                            pass
-                            
                     if getattr(self, "_active_task", None):
                         self._active_task.cancel()
                                 
-                    self._active_task = self.hass.async_create_task(_execute_calls())
+                    self._active_task = self.hass.async_create_task(self._async_execute_calls(calls, config))
                     
                     self._attr_brightness = kwargs[ATTR_BRIGHTNESS]
                     self._attr_is_on = True
@@ -390,30 +341,10 @@ class AdaptiveSceneLight(LightEntity):
                 data["transition"] = transition
             calls.append((DOMAIN, SERVICE_TURN_ON_ADAPTIVE, data, None))
             
-        async def _execute_calls():
-            import asyncio
-            try:
-                await asyncio.sleep(0.1)  # 100ms debounce for Alexa rapid commands
-                for domain, svc, svc_data, target in calls:
-                    if target:
-                        await self.hass.services.async_call(domain, svc, svc_data, target=target)
-                    else:
-                        await self.hass.services.async_call(domain, svc, svc_data)
-                        
-                if config.get("double_trigger"):
-                    await asyncio.sleep(config.get("double_trigger_delay", 0.5))
-                    for domain, svc, svc_data, target in calls:
-                        if target:
-                            await self.hass.services.async_call(domain, svc, svc_data, target=target)
-                        else:
-                            await self.hass.services.async_call(domain, svc, svc_data)
-            except asyncio.CancelledError:
-                pass
-                
         if getattr(self, "_active_task", None):
             self._active_task.cancel()
             
-        self._active_task = self.hass.async_create_task(_execute_calls())
+        self._active_task = self.hass.async_create_task(self._async_execute_calls(calls, config))
             
         self._attr_is_on = True
         self.async_write_ha_state()
@@ -430,3 +361,23 @@ class AdaptiveSceneLight(LightEntity):
         )
         self._attr_is_on = False
         self.async_write_ha_state()
+
+    async def _async_execute_calls(self, calls, config):
+        """Execute a list of service calls."""
+        import asyncio
+        try:
+            await asyncio.sleep(0.1)  # 100ms debounce for Alexa rapid commands
+            async def _run_calls():
+                for domain, svc, svc_data, target in calls:
+                    if target:
+                        await self.hass.services.async_call(domain, svc, svc_data, target=target)
+                    else:
+                        await self.hass.services.async_call(domain, svc, svc_data)
+
+            await _run_calls()
+                    
+            if config.get("double_trigger"):
+                await asyncio.sleep(config.get("double_trigger_delay", 0.5))
+                await _run_calls()
+        except asyncio.CancelledError:
+            pass
