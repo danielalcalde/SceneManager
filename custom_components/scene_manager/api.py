@@ -18,6 +18,8 @@ def async_setup_api(hass: HomeAssistant):
     websocket_api.async_register_command(hass, ws_save_rotation_config)
     websocket_api.async_register_command(hass, ws_get_virtual_light_config)
     websocket_api.async_register_command(hass, ws_save_virtual_light_config)
+    websocket_api.async_register_command(hass, ws_get_scene_brightnesses)
+    websocket_api.async_register_command(hass, ws_resolve_active_schedule)
 
 @websocket_api.websocket_command({
     vol.Required("type"): "scene_manager/get_schedules",
@@ -101,3 +103,50 @@ async def ws_save_virtual_light_config(hass: HomeAssistant, connection: websocke
     await store.async_update_virtual_light_config(msg["area_id"], msg["config"])
     hass.bus.async_fire("scene_manager_area_configured", {"area_id": msg["area_id"]})
     connection.send_result(msg["id"], {"success": True})
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "scene_manager/get_scene_brightnesses",
+})
+@callback
+def ws_get_scene_brightnesses(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict):
+    """Handle get scene brightnesses command."""
+    from .light import _get_scene_entity_states, _get_brightness
+    from homeassistant.helpers import entity_registry as er
+    
+    entity_reg = er.async_get(hass)
+    brightnesses = {}
+    
+    for entity in entity_reg.entities.values():
+        if entity.domain == "scene":
+            scene_id = entity.entity_id
+            states = _get_scene_entity_states(hass, scene_id)
+            if not states:
+                brightnesses[scene_id] = 0.0
+                continue
+                
+            total_b = 0
+            count = 0
+            for entity_id, state_dict in states.items():
+                if entity_id.startswith("light."):
+                    total_b += _get_brightness(state_dict)
+                    count += 1
+            
+            brightnesses[scene_id] = (total_b / count) if count > 0 else 0.0
+            
+    connection.send_result(msg["id"], brightnesses)
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "scene_manager/resolve_active_schedule",
+    vol.Required("schedules"): list,
+})
+@callback
+def ws_resolve_active_schedule(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict):
+    """Handle resolve active schedule command."""
+    from .services import get_active_schedule_index
+    from homeassistant.util import dt as dt_util
+    
+    schedules = msg["schedules"]
+    now = dt_util.now()
+    
+    active_idx = get_active_schedule_index(hass, schedules, now)
+    connection.send_result(msg["id"], {"active_index": active_idx})

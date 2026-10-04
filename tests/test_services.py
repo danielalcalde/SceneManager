@@ -1,12 +1,12 @@
 """Tests for Scene Manager services."""
 import pytest
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from homeassistant.util import dt as dt_util
+from unittest.mock import patch
 
 from custom_components.scene_manager.services import (
     resolve_time,
-    is_time_in_schedule,
 )
 from custom_components.scene_manager.const import (
     DIRECTION_FORWARD,
@@ -18,47 +18,34 @@ async def test_resolve_time_absolute():
     now = dt_util.now().replace(year=2024, month=1, day=1, hour=12, minute=0, second=0, microsecond=0)
     
     # Test valid time
-    resolved = resolve_time(None, "time", "08:00", None, 0, now)
+    resolved = resolve_time(None, "time", "08:00", None, 0, None, None, now.date(), now)
     assert resolved is not None
     assert resolved.hour == 8
     assert resolved.minute == 0
     assert resolved.date() == now.date()
     
     # Test invalid time
-    resolved_invalid = resolve_time(None, "time", "99:99", None, 0, now)
+    resolved_invalid = resolve_time(None, "time", "99:99", None, 0, None, None, now.date(), now)
     assert resolved_invalid is None
 
-async def test_is_time_in_schedule():
-    """Test time window evaluation, including wrap-around midnight."""
-    # Faked "now" is noon local time
-    base_now = dt_util.now().replace(year=2024, month=1, day=1, minute=0, second=0, microsecond=0)
-    now = base_now.replace(hour=12)
+@patch("custom_components.scene_manager.services.get_astral_event_date")
+async def test_resolve_time_sun(mock_get_astral_event_date):
+    """Test sun-based time resolution with bounds."""
+    now = dt_util.now().replace(year=2024, month=1, day=1, hour=12, minute=0, second=0, microsecond=0)
     
-    # Schedule: 08:00 to 18:00 (12:00 is IN)
-    schedule_day = {
-        "start_type": "time", "start_time": "08:00",
-        "end_type": "time", "end_time": "18:00"
-    }
-    assert is_time_in_schedule(None, now, schedule_day) == True
-
-    # Schedule: 18:00 to 22:00 (12:00 is OUT)
-    schedule_evening = {
-        "start_type": "time", "start_time": "18:00",
-        "end_type": "time", "end_time": "22:00"
-    }
-    assert is_time_in_schedule(None, now, schedule_evening) == False
+    # Mock get_astral_event_date to return 06:00 for sunrise
+    mock_get_astral_event_date.return_value = now.replace(hour=6)
     
-    # Wrap around midnight: 20:00 to 06:00 (12:00 is OUT)
-    schedule_night = {
-        "start_type": "time", "start_time": "20:00",
-        "end_type": "time", "end_time": "06:00"
-    }
-    assert is_time_in_schedule(None, now, schedule_night) == False
+    # Normal sun event with offset
+    resolved = resolve_time(None, "sun", None, "sunrise", 30, None, None, now.date(), now)
+    assert resolved is not None
+    assert resolved.hour == 6
+    assert resolved.minute == 30
     
-    # Night time test (now is 23:00)
-    now_night = base_now.replace(hour=23)
-    assert is_time_in_schedule(None, now_night, schedule_night) == True
-
-    # Early morning test (now is 03:00)
-    now_morning = (base_now.replace(day=2, hour=3))
-    assert is_time_in_schedule(None, now_morning, schedule_night) == True
+    # Bounded sun - earliest limit (limit is 07:00, sunrise is 06:00 -> should bound to 07:00)
+    resolved_bounded_early = resolve_time(None, "bounded_sun", None, "sunrise", 0, "earliest", "07:00", now.date(), now)
+    assert resolved_bounded_early.hour == 7
+    
+    # Bounded sun - latest limit (limit is 05:00, sunrise is 06:00 -> should bound to 05:00)
+    resolved_bounded_late = resolve_time(None, "bounded_sun", None, "sunrise", 0, "latest", "05:00", now.date(), now)
+    assert resolved_bounded_late.hour == 5

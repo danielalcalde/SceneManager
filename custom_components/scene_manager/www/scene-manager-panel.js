@@ -19,11 +19,22 @@ class SceneManagerPanel extends HTMLElement {
       schedules: [],
       rotation: { excluded_scenes: [], scene_order: [], current_scene_id: null },
       virtual_light: { enabled: true, interpolation_enabled: false, mapping: {} },
+      sceneBrightnesses: {},
       loading: false,
     };
   }
 
   async init() {
+    try {
+      const brightnessResponse = await this._hass.callWS({
+        type: "scene_manager/get_scene_brightnesses"
+      });
+      this.state.sceneBrightnesses = brightnessResponse || {};
+    } catch (e) {
+      console.error("Failed to fetch scene brightnesses:", e);
+      this.state.sceneBrightnesses = {};
+    }
+    
     this.render();
     try {
       await this._hass.connection.subscribeEvents((event) => {
@@ -72,7 +83,14 @@ class SceneManagerPanel extends HTMLElement {
             name: stateObj ? stateObj.attributes.friendly_name || ent.name || ent.entity_id : ent.name || ent.entity_id
          };
       })
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort((a, b) => {
+         const brightnessA = this.state.sceneBrightnesses?.[a.id] ?? 0;
+         const brightnessB = this.state.sceneBrightnesses?.[b.id] ?? 0;
+         if (brightnessA !== brightnessB) {
+            return brightnessB - brightnessA;
+         }
+         return a.name.localeCompare(b.name);
+      });
   }
 
   async fetchSchedules(areaId) {
@@ -99,9 +117,11 @@ class SceneManagerPanel extends HTMLElement {
         loading: false, 
         selectedArea: areaId 
       });
+      this.refreshActiveSchedule(response || []);
     } catch (e) {
       console.error("Error fetching area data:", e);
       this.setState({ schedules: [], rotation: { excluded_scenes: [], scene_order: [], current_scene_id: null }, virtual_light: { enabled: true, interpolation_enabled: false, double_trigger: false, double_trigger_delay: 0.5, mapping: {} }, loading: false, selectedArea: areaId });
+      this.refreshActiveSchedule([]);
     }
   }
 
@@ -131,6 +151,22 @@ class SceneManagerPanel extends HTMLElement {
       this.showToast("Failed to save settings.", true);
     }
     this.setState({ loading: false });
+  }
+
+  async refreshActiveSchedule(schedules) {
+    if (!this._hass || !schedules || schedules.length === 0) {
+      this.setState({ activeScheduleIndex: null });
+      return;
+    }
+    try {
+      const response = await this._hass.callWS({
+        type: "scene_manager/resolve_active_schedule",
+        schedules: schedules
+      });
+      this.setState({ activeScheduleIndex: response.active_index });
+    } catch(e) {
+      console.warn("Failed to resolve active schedule", e);
+    }
   }
 
   showToast(message, isError = false) {
@@ -165,6 +201,7 @@ class SceneManagerPanel extends HTMLElement {
       });
       
       this.setState({ schedules: copiedSchedules, loading: false });
+      this.refreshActiveSchedule(copiedSchedules);
     } catch(e) {
       console.error("Error copying schedules", e);
       this.setState({ loading: false });
@@ -204,18 +241,19 @@ class SceneManagerPanel extends HTMLElement {
       start_time: "08:00",
       start_sun_event: "sunrise",
       start_offset: 0,
-      end_type: "time",
-      end_time: "18:00",
-      end_sun_event: "sunset",
-      end_offset: 0
+      start_limit_type: "none",
+      start_limit_time: "18:00"
     };
-    this.setState({ schedules: [...this.state.schedules, newSchedule] });
+    const newSchedules = [...this.state.schedules, newSchedule];
+    this.setState({ schedules: newSchedules });
+    this.refreshActiveSchedule(newSchedules);
   }
 
   removeSchedule(index) {
     const newSchedules = [...this.state.schedules];
     newSchedules.splice(index, 1);
     this.setState({ schedules: newSchedules });
+    this.refreshActiveSchedule(newSchedules);
   }
 
   updateSchedule(index, field, value, shouldRender = true) {
@@ -223,6 +261,7 @@ class SceneManagerPanel extends HTMLElement {
     newSchedules[index] = { ...newSchedules[index], [field]: value };
     if (shouldRender) {
       this.setState({ schedules: newSchedules });
+      this.refreshActiveSchedule(newSchedules);
     } else {
       this.state.schedules = newSchedules;
     }
@@ -265,34 +304,55 @@ class SceneManagerPanel extends HTMLElement {
     this.draggedItem = null;
   }
 
-  renderCondition(type, isStart, schedule, index) {
-    const prefix = isStart ? 'start' : 'end';
-    const currentType = schedule[`${prefix}_type`];
-    const timeValue = schedule[`${prefix}_time`];
-    const sunEventValue = schedule[`${prefix}_sun_event`];
-    const offsetValue = schedule[`${prefix}_offset`];
+  renderCondition(schedule, index) {
+    const currentType = schedule.start_type;
+    const timeValue = schedule.start_time;
+    const sunEventValue = schedule.start_sun_event;
+    const offsetValue = schedule.start_offset;
+    const limitType = schedule.start_limit_type || 'none';
+    const limitTime = schedule.start_limit_time || '18:00';
 
     return `
       <div class="condition-row">
         <label>Type:</label>
-        <select class="input-select" onchange="this.getRootNode().host.updateSchedule(${index}, '${prefix}_type', this.value)">
+        <select class="input-select" onchange="this.getRootNode().host.updateSchedule(${index}, 'start_type', this.value)">
           <option value="time" ${currentType === 'time' ? 'selected' : ''}>🕒 Fixed Time</option>
           <option value="sun" ${currentType === 'sun' ? 'selected' : ''}>☀️ Sun Event</option>
+          <option value="bounded_sun" ${currentType === 'bounded_sun' ? 'selected' : ''}>☀️ Bounded Sun Event</option>
         </select>
         
         ${currentType === 'time' ? `
           <label>Time:</label>
-          <input type="time" class="input-text" value="${timeValue}" onchange="this.getRootNode().host.updateSchedule(${index}, '${prefix}_time', this.value, false)">
+          <input type="time" class="input-text" value="${timeValue}" onchange="this.getRootNode().host.updateSchedule(${index}, 'start_time', this.value, false)">
         ` : `
           <label>Event:</label>
-          <select class="input-select" onchange="this.getRootNode().host.updateSchedule(${index}, '${prefix}_sun_event', this.value)">
+          <select class="input-select" onchange="this.getRootNode().host.updateSchedule(${index}, 'start_sun_event', this.value)">
             <option value="sunrise" ${sunEventValue === 'sunrise' ? 'selected' : ''}>Sunrise</option>
             <option value="sunset" ${sunEventValue === 'sunset' ? 'selected' : ''}>Sunset</option>
           </select>
           <label>Offset (min):</label>
-          <input type="number" class="input-text short" value="${offsetValue}" onchange="this.getRootNode().host.updateSchedule(${index}, '${prefix}_offset', parseInt(this.value) || 0, false)">
+          <input type="number" class="input-text short" value="${offsetValue}" onchange="this.getRootNode().host.updateSchedule(${index}, 'start_offset', parseInt(this.value) || 0, false)">
         `}
       </div>
+      ${currentType === 'bounded_sun' ? `
+      <div class="condition-row" style="margin-top: 12px; padding-left: 24px; border-left: 2px solid var(--divider-color, #e0e0e0);">
+        <label style="display:flex; align-items:center;">
+          Constraint:
+          <div class="tooltip">?
+            <span class="tooltiptext">Limits the sun event to a specific time bound. For example, 'No earlier than 07:00' prevents morning scenes from starting at 05:30 during summer sunrises.</span>
+          </div>
+        </label>
+        <select class="input-select" onchange="this.getRootNode().host.updateSchedule(${index}, 'start_limit_type', this.value)">
+          <option value="none" ${limitType === 'none' ? 'selected' : ''}>None</option>
+          <option value="earliest" ${limitType === 'earliest' ? 'selected' : ''}>No earlier than (Min)</option>
+          <option value="latest" ${limitType === 'latest' ? 'selected' : ''}>No later than (Max)</option>
+        </select>
+        ${limitType !== 'none' ? `
+          <label>Time:</label>
+          <input type="time" class="input-text" value="${limitTime}" onchange="this.getRootNode().host.updateSchedule(${index}, 'start_limit_time', this.value, false)">
+        ` : ''}
+      </div>
+      ` : ''}
     `;
   }
 
@@ -302,28 +362,23 @@ class SceneManagerPanel extends HTMLElement {
     ).join('');
 
     return `
-      <div class="card schedule-card">
-        <div class="card-header">
-          <div class="scene-selector">
-            <label>Scene:</label>
-            <select class="input-select large" onchange="this.getRootNode().host.updateSchedule(${index}, 'scene_id', this.value)">
-              <option value="" disabled ${!schedule.scene_id ? 'selected' : ''}>Select a Scene...</option>
-              ${sceneOptions}
-            </select>
-          </div>
+      <div class="card schedule-card ${index === this.state.activeScheduleIndex ? 'active-schedule' : ''}" style="display: flex; flex-wrap: wrap; align-items: center; gap: 24px;">
+        <div class="scene-selector" style="flex: 1 1 250px;">
+          <label>Scene:</label>
+          <select class="input-select large" style="width: 100%;" onchange="this.getRootNode().host.updateSchedule(${index}, 'scene_id', this.value)">
+            <option value="" disabled ${!schedule.scene_id ? 'selected' : ''}>Select a Scene...</option>
+            ${sceneOptions}
+          </select>
+        </div>
+        
+        <div class="condition-wrapper" style="flex: 999 1 auto; display: flex; flex-direction: column; gap: 8px;">
+          ${this.renderCondition(schedule, index)}
+        </div>
+        
+        <div style="flex: 0 0 auto; margin-left: auto;">
           <button class="btn btn-danger" onclick="this.getRootNode().host.removeSchedule(${index})">
             <svg viewBox="0 0 24 24"><path d="M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z" /></svg>
           </button>
-        </div>
-        
-        <div class="condition-box">
-          <div class="condition-title">--- Start Condition ---</div>
-          ${this.renderCondition('start', true, schedule, index)}
-        </div>
-
-        <div class="condition-box">
-          <div class="condition-title">--- End Condition ---</div>
-          ${this.renderCondition('end', false, schedule, index)}
         </div>
       </div>
     `;
@@ -450,6 +505,9 @@ class SceneManagerPanel extends HTMLElement {
         .schedule-card {
           border-left: 4px solid var(--primary-color);
         }
+        .schedule-card.active-schedule {
+          border-left: 4px solid var(--warning-color, #ff9800);
+        }
         .card-header {
           display: flex;
           justify-content: space-between;
@@ -571,6 +629,67 @@ class SceneManagerPanel extends HTMLElement {
           from { transform: translate(-50%, 100%); opacity: 0; }
           to { transform: translate(-50%, 0); opacity: 1; }
         }
+        
+        .tooltip {
+          position: relative;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 16px;
+          height: 16px;
+          border-radius: 50%;
+          background: var(--divider-color, #e0e0e0);
+          color: var(--primary-text-color);
+          font-size: 11px;
+          font-weight: bold;
+          cursor: help;
+          margin-left: 6px;
+        }
+        .tooltip .tooltiptext {
+          visibility: hidden;
+          width: 250px;
+          background-color: var(--card-background-color, #333);
+          color: var(--primary-text-color, #fff);
+          text-align: left;
+          border-radius: 6px;
+          padding: 8px;
+          position: absolute;
+          z-index: 10;
+          bottom: 125%;
+          left: 50%;
+          margin-left: -125px;
+          opacity: 0;
+          transition: opacity 0.3s;
+          font-weight: normal;
+          box-shadow: 0px 4px 10px rgba(0,0,0,0.25);
+          border: 1px solid var(--divider-color, #444);
+          font-size: 13px;
+        }
+        .tooltip:hover .tooltiptext {
+          visibility: visible;
+          opacity: 1;
+        }
+        
+        .chips-container {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 12px;
+          padding: 8px 0;
+        }
+        .chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 4px 12px;
+          background: var(--secondary-background-color, #f0f0f0);
+          border: 1px solid var(--divider-color, #e0e0e0);
+          border-radius: 16px;
+          cursor: grab;
+          font-size: 0.9em;
+        }
+        .chip:active {
+          cursor: grabbing;
+        }
       </style>
       
       ${this.state.toastMessage ? `
@@ -609,76 +728,6 @@ class SceneManagerPanel extends HTMLElement {
       ` : ''}
 
       ${this.state.selectedArea ? `
-        <div class="card" style="margin-bottom: 24px; border-left: 4px solid var(--info-color, #2196f3);">
-          <div class="card-header" style="border-bottom:none; margin-bottom:0; padding-bottom:0;">
-            <h3 style="margin-top:0; color: var(--primary-text-color); display:flex; align-items:center; gap:8px;">
-              <svg style="width:24px;height:24px;fill:currentColor;" viewBox="0 0 24 24"><path d="M12,2A7,7 0 0,0 5,9C5,11.38 6.19,13.47 8,14.74V17A1,1 0 0,0 9,18H15A1,1 0 0,0 16,17V14.74C17.81,13.47 19,11.38 19,9A7,7 0 0,0 12,2M9,21A1,1 0 0,0 10,22H14A1,1 0 0,0 15,21V20H9V21Z"/></svg>
-              Virtual Light Settings
-            </h3>
-          </div>
-          <div style="padding-top: 16px;">
-            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--primary-text-color); font-weight:bold;">
-              <input type="checkbox" style="width:16px; height:16px;"
-                     ${this.state.virtual_light?.enabled !== false ? 'checked' : ''} 
-                     onchange="this.getRootNode().host.toggleVirtualLight(this.checked)">
-              Enable Virtual Light for this Area
-            </label>
-            <p style="margin-top:4px; margin-bottom:16px; font-size: 0.9em; color: var(--secondary-text-color);">
-              Creates a single entity (e.g. <code>light.living_room_adaptive_lights</code>) you can expose to Alexa/Google. 
-            </p>
-
-            ${this.state.virtual_light?.enabled !== false ? `
-              <div style="margin-left: 24px; padding-left: 16px; border-left: 2px solid var(--divider-color, #e0e0e0);">
-                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--primary-text-color);">
-                  <input type="checkbox" style="width:16px; height:16px;"
-                         ${this.state.virtual_light?.interpolation_enabled ? 'checked' : ''} 
-                         onchange="this.getRootNode().host.toggleInterpolation(this.checked)">
-                  <strong>Enable Scene Interpolation</strong>
-                </label>
-                <p style="margin-top:4px; margin-bottom:8px; font-size: 0.9em; color: var(--secondary-text-color);">
-                  Scrub the Virtual Light brightness slider (0-100%) to smoothly blend between different scenes. 
-                  <strong style="color: var(--warning-color, #ff9800);">⚠️ Note: True interpolation ONLY works with native HA scenes (created in the UI).</strong> Hub-imported scenes (Hue, etc) are not supported.
-                </p>
-
-                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--primary-text-color); margin-top: 16px;">
-                  <input type="checkbox" style="width:16px; height:16px;"
-                         ${this.state.virtual_light?.double_trigger ? 'checked' : ''} 
-                         onchange="this.getRootNode().host.toggleDoubleTrigger(this.checked)">
-                  <strong>Enable Double Trigger (Hardware Bug Workaround)</strong>
-                </label>
-                <p style="margin-top:4px; margin-bottom:8px; font-size: 0.9em; color: var(--secondary-text-color);">
-                  Sends commands twice with a small delay. Enable this if your bulbs glitch or ignore color/brightness changes when waking up from an off state.
-                </p>
-                
-                ${this.state.virtual_light?.double_trigger ? `
-                  <div style="margin-left: 24px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px;">
-                    <label style="color: var(--primary-text-color);">Delay (seconds):</label>
-                    <input type="number" step="0.1" min="0" max="5" class="input-text short"
-                           value="${this.state.virtual_light?.double_trigger_delay ?? 0.5}"
-                           onchange="this.getRootNode().host.updateDoubleTriggerDelay(this.value)">
-                  </div>
-                ` : ''}
-                
-                
-                ${this.state.virtual_light?.interpolation_enabled ? `
-                  <div style="margin-top: 12px; background: rgba(0,0,0,0.02); padding: 12px; border-radius: 4px; border: 1px solid var(--divider-color, #e0e0e0);">
-                    <p style="margin-top:0; font-size:0.9em; font-weight:bold;">Assign brightness percentages to scenes:</p>
-                    <div style="display:grid; gap: 8px;">
-                      ${availableScenes.map(scene => `
-                        <div style="display:flex; align-items:center; gap:8px;">
-                          <input type="number" min="0" max="100" style="width: 60px; padding: 4px;" placeholder="%" 
-                                 value="${this.state.virtual_light?.mapping?.[scene.id] ?? ''}"
-                                 onchange="this.getRootNode().host.updateInterpolationMapping('${scene.id}', this.value)">
-                          <span>% &mdash; ${scene.name}</span>
-                        </div>
-                      `).join('')}
-                    </div>
-                  </div>
-                ` : ''}
-              </div>
-            ` : ''}
-          </div>
-        </div>
 
         <div class="card" style="margin-bottom: 24px; border-left: 4px solid var(--warning-color, #ff9800);">
           <div class="card-header" style="border-bottom:none; margin-bottom:0; padding-bottom:0;">
@@ -694,7 +743,7 @@ class SceneManagerPanel extends HTMLElement {
               : "<em>None tracked</em>"
             }</p>
             <p style="margin-bottom: 8px; color: var(--secondary-text-color);">Select which scenes are included when pressing a cycle button:</p>
-            <div style="display:flex; flex-direction:column; gap:8px; padding-left:8px;">
+            <div class="chips-container">
               ${(function() {
                 let orderedScenes = [];
                 let sceneOrder = this.state.rotation.scene_order || [];
@@ -708,19 +757,15 @@ class SceneManagerPanel extends HTMLElement {
                   }
                 });
                 return orderedScenes.map((scene, index) => `
-                  <div style="display:flex; align-items:center; gap:8px; padding: 4px; border: 1px solid transparent; border-radius: 4px;"
-                       draggable="true"
+                  <div class="chip" draggable="true"
                        ondragstart="this.getRootNode().host.dragStart(event, ${index})"
                        ondragover="this.getRootNode().host.dragOver(event, ${index})"
-                       ondrop="this.getRootNode().host.drop(event, ${index})"
-                       onstyle="cursor: grab;">
-                    <svg style="width:20px;height:20px;fill:var(--secondary-text-color);cursor:grab;" viewBox="0 0 24 24"><path d="M11 18c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2zm-2-8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 4c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
-                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--primary-text-color); flex:1; margin:0;">
-                      <input type="checkbox" style="width:16px; height:16px;"
-                             ${!(this.state.rotation.excluded_scenes || []).includes(scene.id) ? 'checked' : ''} 
-                             onchange="this.getRootNode().host.toggleRotationInclusion('${scene.id}')">
-                      ${scene.name}
-                    </label>
+                       ondrop="this.getRootNode().host.drop(event, ${index})">
+                    <svg style="width:16px;height:16px;fill:var(--secondary-text-color);cursor:grab;" viewBox="0 0 24 24"><path d="M11 18c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2zm-2-8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 4c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+                    <input type="checkbox" style="width:16px; height:16px; margin:0;"
+                           ${!(this.state.rotation.excluded_scenes || []).includes(scene.id) ? 'checked' : ''} 
+                           onchange="this.getRootNode().host.toggleRotationInclusion('${scene.id}')">
+                    <span>${scene.name}</span>
                   </div>
                 `).join('');
               }).bind(this)()}
@@ -733,6 +778,8 @@ class SceneManagerPanel extends HTMLElement {
           Timetables
         </h3>
         
+
+
         <div class="schedules">
           ${this.state.schedules.length === 0 ? `
             <div class="empty-state card">
@@ -760,6 +807,75 @@ class SceneManagerPanel extends HTMLElement {
             <svg style="width:20px;height:20px;fill:currentColor;margin-right:4px;" viewBox="0 0 24 24"><path d="M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z" /></svg>
             Add New Schedule
           </button>
+          
+        <div class="card" style="margin-bottom: 24px; border-left: 4px solid var(--info-color, #2196f3);">
+          <div class="card-header" style="border-bottom:none; margin-bottom:0; padding-bottom:0;">
+            <h3 style="margin-top:0; color: var(--primary-text-color); display:flex; align-items:center; gap:8px;">
+              <svg style="width:24px;height:24px;fill:currentColor;" viewBox="0 0 24 24"><path d="M12,2A7,7 0 0,0 5,9C5,11.38 6.19,13.47 8,14.74V17A1,1 0 0,0 9,18H15A1,1 0 0,0 16,17V14.74C17.81,13.47 19,11.38 19,9A7,7 0 0,0 12,2M9,21A1,1 0 0,0 10,22H14A1,1 0 0,0 15,21V20H9V21Z"/></svg>
+              Virtual Light Settings
+            </h3>
+          </div>
+          <div style="padding-top: 16px;">
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--primary-text-color); font-weight:bold;">
+              <input type="checkbox" style="width:16px; height:16px;"
+                     ${this.state.virtual_light?.enabled !== false ? 'checked' : ''} 
+                     onchange="this.getRootNode().host.toggleVirtualLight(this.checked)">
+              Enable Virtual Light for this Area
+              <div class="tooltip">?
+                <span class="tooltiptext">Creates a single entity (e.g. <code>light.living_room_adaptive_lights</code>) you can expose to Alexa/Google.</span>
+              </div>
+            </label>
+
+            ${this.state.virtual_light?.enabled !== false ? `
+              <div style="margin-top: 16px; margin-left: 24px; padding-left: 16px; border-left: 2px solid var(--divider-color, #e0e0e0);">
+                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--primary-text-color);">
+                  <input type="checkbox" style="width:16px; height:16px;"
+                         ${this.state.virtual_light?.interpolation_enabled ? 'checked' : ''} 
+                         onchange="this.getRootNode().host.toggleInterpolation(this.checked)">
+                  <strong>Enable Scene Interpolation</strong>
+                  <div class="tooltip">?
+                    <span class="tooltiptext">Scrub the Virtual Light brightness slider (0-100%) to smoothly blend between different scenes.<br><br><strong style="color: var(--warning-color, #ff9800);">⚠️ Note: True interpolation ONLY works with native HA scenes (created in the UI).</strong> Hub-imported scenes (Hue, etc) are not supported.</span>
+                  </div>
+                </label>
+
+                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--primary-text-color); margin-top: 16px;">
+                  <input type="checkbox" style="width:16px; height:16px;"
+                         ${this.state.virtual_light?.double_trigger ? 'checked' : ''} 
+                         onchange="this.getRootNode().host.toggleDoubleTrigger(this.checked)">
+                  <strong>Enable Double Trigger (Hardware Bug Workaround)</strong>
+                  <div class="tooltip">?
+                    <span class="tooltiptext">Sends commands twice with a small delay. Enable this if your bulbs glitch or ignore color/brightness changes when waking up from an off state.</span>
+                  </div>
+                </label>
+                
+                ${this.state.virtual_light?.double_trigger ? `
+                  <div style="margin-left: 24px; margin-top: 8px; margin-bottom: 8px; display: flex; align-items: center; gap: 8px;">
+                    <label style="color: var(--primary-text-color);">Delay (seconds):</label>
+                    <input type="number" step="0.1" min="0" max="5" class="input-text short"
+                           value="${this.state.virtual_light?.double_trigger_delay ?? 0.5}"
+                           onchange="this.getRootNode().host.updateDoubleTriggerDelay(this.value)">
+                  </div>
+                ` : ''}
+                
+                ${this.state.virtual_light?.interpolation_enabled ? `
+                  <div style="margin-top: 16px; background: rgba(0,0,0,0.02); padding: 12px; border-radius: 4px; border: 1px solid var(--divider-color, #e0e0e0);">
+                    <p style="margin-top:0; font-size:0.9em; font-weight:bold;">Assign brightness percentages to scenes:</p>
+                    <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; margin-top: 8px;">
+                      ${availableScenes.map(scene => `
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <input type="number" min="0" max="100" style="width: 50px; padding: 4px;" placeholder="%" 
+                                 value="${this.state.virtual_light?.mapping?.[scene.id] ?? ''}"
+                                 onchange="this.getRootNode().host.updateInterpolationMapping('${scene.id}', this.value)">
+                          <span style="font-size:0.9em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${scene.name}">% &mdash; ${scene.name}</span>
+                        </div>
+                      `).join('')}
+                    </div>
+                  </div>
+                ` : ''}
+              </div>
+            ` : ''}
+          </div>
+        </div>
           
           <div class="actions">
             <button class="btn" onclick="this.getRootNode().host.saveSchedules()" ${this.state.loading ? 'disabled' : ''}>

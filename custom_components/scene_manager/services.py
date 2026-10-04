@@ -37,48 +37,68 @@ from .store import SceneManagerStore
 
 _LOGGER = logging.getLogger(__name__)
 
-def resolve_time(hass: HomeAssistant, time_type: str, time_str: str, sun_event: str, offset: int, now: datetime) -> datetime | None:
-    """Resolve a configured time block to an absolute datetime for today."""
+def resolve_time(hass: HomeAssistant, time_type: str, time_str: str, sun_event: str, offset: int, limit_type: str, limit_time_str: str, target_date, now: datetime) -> datetime | None:
+    """Resolve a configured time block to an absolute datetime for a given date."""
     if time_type == "time" and time_str:
         # time_str is like "08:00"
         parsed = dt_util.parse_time(time_str)
         if parsed:
-            return dt_util.as_local(datetime.combine(now.date(), parsed))
-    elif time_type == "sun" and sun_event:
+            return dt_util.as_local(datetime.combine(target_date, parsed))
+    elif time_type in ("sun", "bounded_sun") and sun_event:
         # sun_event is "sunrise" or "sunset"
-        event_time = get_astral_event_date(hass, sun_event, now.date())
+        event_time = get_astral_event_date(hass, sun_event, target_date)
         if event_time:
-            return dt_util.as_local(event_time + timedelta(minutes=offset or 0))
+            t = dt_util.as_local(event_time + timedelta(minutes=offset or 0))
+            if time_type == "bounded_sun" and limit_type and limit_type != "none" and limit_time_str:
+                parsed_limit = dt_util.parse_time(limit_time_str)
+                if parsed_limit:
+                    limit_dt = dt_util.as_local(datetime.combine(target_date, parsed_limit))
+                    if limit_type == "earliest":
+                        t = max(t, limit_dt)
+                    elif limit_type == "latest":
+                        t = min(t, limit_dt)
+            return t
     return None
 
-def is_time_in_schedule(hass: HomeAssistant, now: datetime, schedule: dict) -> bool:
-    """Check if the current time is within the configured schedule window."""
-    start_time = resolve_time(
-        hass,
-        schedule.get("start_type"),
-        schedule.get("start_time"),
-        schedule.get("start_sun_event"),
-        schedule.get("start_offset", 0),
-        now,
-    )
-    end_time = resolve_time(
-        hass,
-        schedule.get("end_type"),
-        schedule.get("end_time"),
-        schedule.get("end_sun_event"),
-        schedule.get("end_offset", 0),
-        now,
-    )
+def get_active_schedule_index(hass: HomeAssistant, schedules: list, now: datetime) -> int | None:
+    """Return the index of the schedule that is currently active based on the time rules."""
+    active_index = None
+    best_time = None
     
-    if not start_time or not end_time:
-        return False
-        
-    # Handle wrap around midnight
-    if end_time < start_time:
-        return now >= start_time or now <= end_time
-    else:
-        return start_time <= now <= end_time
-
+    for idx, schedule in enumerate(schedules):
+        t_today = resolve_time(
+            hass,
+            schedule.get("start_type"),
+            schedule.get("start_time"),
+            schedule.get("start_sun_event"),
+            schedule.get("start_offset", 0),
+            schedule.get("start_limit_type"),
+            schedule.get("start_limit_time"),
+            now.date(),
+            now
+        )
+        if t_today and t_today <= now:
+            if best_time is None or t_today > best_time:
+                best_time = t_today
+                active_index = idx
+                
+        t_yesterday = resolve_time(
+            hass,
+            schedule.get("start_type"),
+            schedule.get("start_time"),
+            schedule.get("start_sun_event"),
+            schedule.get("start_offset", 0),
+            schedule.get("start_limit_type"),
+            schedule.get("start_limit_time"),
+            (now - timedelta(days=1)).date(),
+            now
+        )
+        if t_yesterday and t_yesterday <= now:
+            if best_time is None or t_yesterday > best_time:
+                best_time = t_yesterday
+                active_index = idx
+                
+    return active_index
 
 async def async_setup_services(hass: HomeAssistant, store: SceneManagerStore):
     """Set up the services for Scene Manager."""
@@ -87,13 +107,30 @@ async def async_setup_services(hass: HomeAssistant, store: SceneManagerStore):
     hass.data[DOMAIN]["cycle_state"] = {}
 
     def get_scenes_for_area(area_id: str) -> list[str]:
-        """Return a sorted list of scene entity IDs for a given area."""
+        """Return a sorted list of scene entity IDs for a given area based on average brightness."""
         entity_reg = er.async_get(hass)
         scenes = []
         for entity in entity_reg.entities.values():
             if entity.domain == "scene" and entity.area_id == area_id:
                 scenes.append(entity.entity_id)
-        return sorted(scenes)
+                
+        from .light import _get_scene_entity_states, _get_brightness
+        
+        def _scene_avg_brightness(scene_id: str) -> float:
+            states = _get_scene_entity_states(hass, scene_id)
+            if not states:
+                return 0.0
+            
+            total_b = 0
+            count = 0
+            for entity_id, state_dict in states.items():
+                if entity_id.startswith("light."):
+                    total_b += _get_brightness(state_dict)
+                    count += 1
+                    
+            return (total_b / count) if count > 0 else 0.0
+            
+        return sorted(scenes, key=_scene_avg_brightness, reverse=True)
 
     async def handle_cycle_scene(call: ServiceCall):
         area_id = call.data[CONF_AREA_ID]
@@ -183,12 +220,8 @@ async def async_setup_services(hass: HomeAssistant, store: SceneManagerStore):
             return
             
         now = dt_util.now()
-        active_scene = None
-        
-        for schedule in schedules:
-            if is_time_in_schedule(hass, now, schedule):
-                active_scene = schedule.get("scene_id")
-                break
+        active_idx = get_active_schedule_index(hass, schedules, now)
+        active_scene = schedules[active_idx].get("scene_id") if active_idx is not None else None
                 
         if active_scene:
             _LOGGER.debug("Adaptive: Activating scene %s for area %s", active_scene, area_id)
@@ -226,7 +259,7 @@ async def async_setup_services(hass: HomeAssistant, store: SceneManagerStore):
                 "scene_id": active_scene
             })
         else:
-            _LOGGER.debug("Adaptive: No matching schedule found for current time")
+            _LOGGER.warning("Adaptive: No matching schedule found for current time for area %s", area_id)
 
     hass.services.async_register(
         DOMAIN, SERVICE_CYCLE_SCENE, handle_cycle_scene, schema=CYCLE_SCHEMA
